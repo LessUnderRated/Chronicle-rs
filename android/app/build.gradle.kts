@@ -84,6 +84,10 @@ android {
                     "-DDC_BUILD_TESTS=OFF",
                     "-DANDROID_STL=c++_shared",
                     "-DFETCHCONTENT_SOURCE_DIR_SDL3=${sdlDir.path}",
+                    // C++26 has CMake scan for modules with any clang-scan-deps it finds, which may be
+                    // the host's, not the NDK's, and fails on SDL's precompiled header; nothing here is a
+                    // module.
+                    "-DCMAKE_CXX_SCAN_FOR_MODULES=OFF",
                 )
                 targets += listOf("darkcloud", "SDL3-shared")
             }
