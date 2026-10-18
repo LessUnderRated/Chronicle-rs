@@ -2,6 +2,7 @@ package io.github.lessunderrated.chronicle;
 
 import android.app.AlertDialog;
 import android.content.Intent;
+import android.content.pm.ActivityInfo;
 import android.graphics.Color;
 import android.net.Uri;
 import android.os.Bundle;
@@ -60,6 +61,16 @@ public class ChronicleActivity extends SDLActivity implements TouchOverlay.Liste
 
     private int dp(int value) {
         return Math.round(value * getResources().getDisplayMetrics().density);
+    }
+
+    /**
+     * Landscape only, either way up. SDL asks for an orientation when it makes the window, and for a
+     * resizable window without a hint that is any the player allows, portrait too; the manifest's
+     * sensorLandscape stands instead.
+     */
+    @Override
+    public void setOrientationBis(int w, int h, boolean resizable, String hint) {
+        setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
     }
 
     /** Back opens the menu rather than leaving the game. */
