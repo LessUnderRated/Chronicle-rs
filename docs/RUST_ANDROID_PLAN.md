@@ -4,6 +4,16 @@ The goal: a Rust build of Chronicle that ships as an Android APK, built the way
 [doukutsu-rs](https://github.com/doukutsu-rs/doukutsu-rs) builds Cave Story's
 (read at `d05995b`, 2026-10-13). The first device is a Galaxy S26.
 
+That commit is checked in as a reference at `reference/doukutsu-rs` (MIT). It's
+a submodule with `update = none`, so CI and `git clone --recurse-submodules`
+skip it. Fetch it with:
+
+```sh
+git submodule update --init --checkout reference/doukutsu-rs
+```
+
+Paths below such as `drsandroid/...` are relative to it.
+
 ## 1. How doukutsu-rs makes its APK
 
 Everything lives in `drsandroid/`:
