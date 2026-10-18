@@ -1,232 +1,182 @@
 # Rust port and Android APK plan
 
-The goal: a Rust build of Chronicle that ships as an Android APK, the way
-[doukutsu-rs](https://github.com/doukutsu-rs/doukutsu-rs) did for Cave Story.
-That means a Rust engine that reads the player's own game data, has touch
-controls, and builds with `cargo` and Gradle.
+The goal: a Rust build of Chronicle that ships as an Android APK, built the way
+[doukutsu-rs](https://github.com/doukutsu-rs/doukutsu-rs) builds Cave Story's
+(read at `d05995b`, 2026-10-13). The first device is a Galaxy S26.
 
-## 1. Starting point
+## 1. How doukutsu-rs makes its APK
 
-| Layer | Where | Size | Notes |
-|---|---|---|---|
-| Decompiled game | `ps2/src` | ~167k lines C++ | Matching decomp. The PS2 build only, never edited for the port |
-| Port overrides | `port/src` | ~68k lines C++ | `PORT_OVERRIDE` replacements for hardware-touching functions |
-| Host layer `dc_host` | `tools/kazarov/port/{gfx,platform,audio,sce}` | ~19k lines C++ | Vulkan 1.3 renderer, SDL3 window/input, SPU2-style synth, SDK stubs. **Includes no game headers** |
-| Data tool | `tools/dcdata` | | ISO → `data/`, normalized packs, `languages.json` |
-
-Facts that shape the plan:
-
-- **The 64-bit work is done.** `darkcloud` is PIE, its arenas sit above 4 GiB,
-  and it already runs on arm64 macOS (`docs/DECOUPLING_PLAN.md`,
-  `docs/MACOS.md`). Android arm64 is PIE-only, so that part is already handled.
-- **`dc_host` is a clean seam.** `gfx/gfx.hpp` is the renderer's whole public
-  API (74 entry points), and platform and audio are just as narrow. Anything
-  that provides those APIs can host the game.
-- **Determinism tooling exists.** `--input FILE` replays scripted pad input,
-  `--headless`/`--offscreen` render without a window, and `ReadbackFrame`
-  returns pixels. Together they make an oracle to diff a Rust translation
-  against.
-- **Mobile GPU problems.** The renderer needs Vulkan 1.3, `dualSrcBlend`
-  (GS blend emulation, `draw.frag` `index = 1`), and 8192 update-after-bind
-  sampled images per stage. Many Android devices have Vulkan 1.1, and some
-  Mali and PowerVR drivers lack `dualSrcBlend` or have lower descriptor limits.
-  **We can't just reuse the renderer as it is.**
-
-## 2. What doukutsu-rs did, and what carries over
-
-doukutsu-rs is a Rust reimplementation, not an emulator. It reads the original
-data files, has its own renderer (GL/GLES) and a backend trait over the
-platform (SDL2 on desktop, `ndk`/`jni` glue on Android), and keeps an
-`app/` Gradle project that packages a Rust `cdylib` into an APK with touch
-controls and a file picker for data.
-
-What we copy: the backend trait, the Gradle-wraps-`cdylib` layout, the
-"bring your own data" rule, and the touch overlay.
-
-What we do differently: Cave Story is ~40k lines of original logic, while Dark
-Cloud is ~235k lines of C++. A big-bang rewrite would take a long time to
-reach anything playable. **We port incrementally (strangler fig) instead.**
-Rust takes over from the outside in, the C++ keeps running until each piece is
-replaced, and every replacement is checked against the C++ build.
-
-## 3. Strategy
+Everything lives in `drsandroid/`:
 
 ```
-Phase 1          Phase 2                  Phase 3              Phase 4                 Phase 5
-Rust formats  →  Rust host replaces    →  Android APK       →  Game units move     →  Pure Rust
-+ dcdata-rs      dc_host (wgpu, audio,    (cargo-ndk, Gradle,  C++ → Rust, diffed      (C++ and clang
-                 input) via C ABI;        touch, SAF)          against the oracle      dropped)
-                 C++ game as staticlib
+drsandroid/
+  Cargo.toml                  crate-type = ["staticlib"], depends on the game crate
+  src/lib.rs                  #[no_mangle] SDL_main → stdout/stderr to logcat → ndk_context → game::init
+  build.gradle.kts            Gradle root
+  app/build.gradle.kts        compileSdk/targetSdk 35, minSdk 24, NDK 28.0.13004108, c++_shared,
+                              externalNativeBuild → src/main/cpp/CMakeLists.txt,
+                              java.srcDirs += SDL's android-project Java (found with `cargo metadata`)
+  app/src/main/cpp/CMakeLists.txt
+                              FetchContent Corrosion v0.5.2
+                              add_subdirectory(SDL sources that cargo checked out for sdl2-sys)
+                              corrosion_import_crate(drsandroid) → libdrsandroid.so =
+                                whole-archive(drsandroid-static) + android EGL log SDL2
+  app/src/main/java/...       MainActivity (checks for data/, offers download)
+                              GameActivity extends org.libsdl.app.SDLActivity
+                                (getLibraries = SDL2, drsandroid; reports cutout insets)
+                              DoukutsuDocumentsProvider (exposes getFilesDir() in the system Files
+                                app, so players copy their data in)
+  app/packages.txt            sdkmanager list CI installs (ndk, build-tools, platform)
 ```
 
-The APK comes in Phase 3, still with C++ game logic inside. From then on
-every phase ships a playable APK.
+CI (`.github/workflows/ci.yml`, `build_android`) installs the four Rust
+Android targets, installs `packages.txt` with `sdkmanager`, runs
+`./gradlew assembleRelease`, signs the APK with `apksigner` using keystore
+secrets, and uploads it.
 
-## 4. Repository layout
+The engine itself has an SDL2 backend on Android, a GLES 3.0 renderer
+(`#version 300 es`, sprite batches), and touch controls in game logic
+(`input/touch_controls.rs` and `touch_player_controller.rs`, fed by SDL
+`FingerDown`/`FingerMotion`/`FingerUp`).
 
-A new repo (or a `rs/` tree here), as a Cargo workspace:
+**What matters here is that Gradle builds through CMake, CMake builds SDL from
+source and links the Rust crate with Corrosion, and SDL's own Java activity
+hosts it.** Chronicle already builds with CMake on SDL3, so it fits the same
+pipeline without restructuring.
+
+## 2. Extending this to 3D
+
+doukutsu-rs's renderer is 2D only, so none of its graphics code carries over.
+Chronicle doesn't need it:
+
+| Piece | doukutsu-rs | Chronicle on Android |
+|---|---|---|
+| Window/input/audio | SDL2 + `SDLActivity` | **SDL3** + SDL3's `SDLActivity` (`android-project/` in SDL3's sources) |
+| Renderer | GLES 3.0, 2D | **Kazarov's existing Vulkan renderer** (`tools/kazarov/port/gfx`), surface from `SDL_Vulkan_CreateSurface` |
+| Shaders | GLSL compiled at run time | GLSL → SPIR-V at build time with the host's `glslangValidator`, as now |
+| Native lib | Rust `staticlib` | C++ game (`ps2/src` + `port/src` + `dc_host`) **plus** a Rust `staticlib` (`chronicle-android`) owning `SDL_main` |
+| Touch | in game logic | **a virtual gamepad below the game**: an SDL3 virtual joystick (`SDL_AttachVirtualJoystick`) fed by finger events. The game's pad path doesn't change |
+| Data | Files-app provider + download | Files-app provider **and** `SDL_ShowOpenFileDialog` (SAF on Android) for the ISO, which the first-run screen already calls |
+
+### The S26's GPU
+
+The Galaxy S26 ships with a Snapdragon 8 Elite Gen 5 (Adreno 840) or an Exynos
+2600 (Xclipse 960, AMD RDNA), depending on region. Both drivers are Vulkan 1.3+
+and are expected to have everything Kazarov's renderer requires: `dualSrcBlend`,
+`shaderClipDistance`, descriptor indexing with 8192 update-after-bind images,
+`dynamicRendering`, and `synchronization2`.
+
+**Check this first, on the phone:** `RendererInit` prints each requirement a
+device lacks (`tools/kazarov/port/gfx/requirements.cpp`), and the first logcat
+run shows it. If something is missing, see the fallbacks in section 6. **No
+wgpu or GLES rewrite is needed for the S26.**
+
+## 3. Android problems in the current C++
+
+What I found reading the sources, and the fixes:
+
+| Where | Problem | Fix |
+|---|---|---|
+| `tools/kazarov/port/platform/paths.cpp` | Android defines `__linux__`, so it takes the XDG branch | Add an `__ANDROID__` branch first: `SDL_GetAndroidInternalStoragePath()` for `data/`, `save/`, `soundtrack/` |
+| `port/src/main.cpp:475` | `PORT_OVERRIDE int main(...)`, but SDL on Android calls `SDL_main` | Rust's `SDL_main` calls it under another name (`-Dmain=dc_main` on that unit, or a one-line `dc_main` wrapper) |
+| `KazarovPort.cmake` | `find_package(Vulkan 1.4)`, but the NDK's headers may be older and there's no loader to `find` | On Android: Vulkan-Headers via FetchContent, link the NDK's `libvulkan.so` |
+| `KazarovPort.cmake` | `find_package(SDL3)` | Already skipped `if(TARGET SDL3::SDL3)`, so `add_subdirectory(SDL3)` first is enough |
+| `dcdata extract` / first run | Reads the ISO with `std::ifstream`, but SAF returns a `content://` URI | Open it with `SDL_IOFromFile` (SDL3 handles `content://` on Android), or copy it into `getCacheDir()` first |
+| C++26 | The port needs clang ≥ 20 | Use an NDK whose clang is ≥ 20 (r29+). Check with `__clang_major__` and fix the libc++ gaps in `port/src` |
+| `memory.cpp` | `MAP_NORESERVE` arenas | Works on bionic. Check the total reservation against the S26's RAM in logcat |
+| Discord, Flatpak, GTest, `dualsense` HID | Desktop-only | `if(NOT ANDROID)` around Discord, Flatpak and tests. DualSense still works through SDL's HIDAPI over Bluetooth |
+
+## 4. Layout
+
+Copy `drsandroid/` and change three things: SDL3 instead of SDL2, the C++
+game added to the CMake build, and a Vulkan surface instead of EGL.
 
 ```
-chronicle-rs/
-  Cargo.toml                 workspace
-  crates/
-    dc-formats/              ISO9660, DATA.HD2/DAT, packs, TIM2, IMG, MDS/MDT, HD/BD/SQ, VAG, STB
-    dc-data/                 dcdata in Rust: extract, normalize, fingerprint releases, languages.json
-    dc-audio/                port of kazarov audio: VAG decode, synth, sequencer, reverb, mixer
-    dc-gfx/                  wgpu renderer implementing the gfx.hpp contract
-    dc-platform/             Backend trait: window, input, clock, paths, settings
-      backend-sdl3/          desktop (sdl3 crate)
-      backend-android/       android-activity (GameActivity) + ndk + jni
-    dc-host-ffi/             extern "C" surface the C++ game links against (Phases 2–4)
-    dc-game/                 Rust game units as they are translated (Phase 4+)
-    chronicle/               desktop binary
-    chronicle-android/       cdylib for the APK
-  cpp/                       CMake build of ps2/src + port/src as libdcgame.a, no dc_host
-  shim/                      thin C++ that keeps gfx.hpp/platform/audio signatures, forwards to Rust
-  app/                       Android Gradle project (like doukutsu-rs/app)
-  tools/oracle/              runs C++ and Rust builds on the same --input script and diffs them
+android/
+  Cargo.toml                       chronicle-android: crate-type = ["staticlib"]
+  src/lib.rs                       SDL_main: logcat pipe (as drsandroid), ndk_context,
+                                   chdir to internal storage, touch overlay, → dc_main(argc, argv)
+  src/touch.rs                     finger events → SDL virtual gamepad; layout and drawing data
+  build.gradle.kts  settings.gradle  gradle.properties  gradlew
+  app/build.gradle.kts             as drsandroid's: compileSdk/targetSdk 35+, minSdk 29 (Vulkan 1.1 floor
+                                   on the loader side), ndkVersion r29+, c++_shared,
+                                   abiFilters arm64-v8a (+ x86_64 for the emulator),
+                                   java.srcDirs += SDL3/android-project/app/src/main/java
+  app/packages.txt
+  app/src/main/cpp/CMakeLists.txt
+      FetchContent Corrosion; FetchContent or add_subdirectory SDL3 (pinned 3.4.x)
+      FetchContent Vulkan-Headers
+      set(PLATFORM PC) + add_subdirectory(${CHRONICLE_ROOT} chronicle)   # builds dc_host + game as a static lib
+      corrosion_import_crate(android/Cargo.toml)
+      add_library(main SHARED dummy.cpp)
+      target_link_libraries(main  -Wl,--whole-archive chronicle-android darkcloud_game -Wl,--no-whole-archive
+                            SDL3::SDL3 vulkan android log)
+  app/src/main/java/.../
+      ChronicleActivity extends org.libsdl.app.SDLActivity   getLibraries = SDL3, main; insets
+      MainActivity                                           data check → "Pick your Dark Cloud ISO"
+      ChronicleDocumentsProvider                             copied from DoukutsuDocumentsProvider
+  app/src/main/AndroidManifest.xml  sensorLandscape, isGame, uses-feature vulkan.version 0x403000
 ```
 
-## 5. Phases
+On the Chronicle side, `port/CMakeLists.txt` needs one new option: build the
+game as a static library (`darkcloud_game`) instead of the `darkcloud`
+executable when `ANDROID` is set.
 
-### Phase 0: Ground rules (days)
+## 5. Touch controls for a 3D game
 
-- **License.** Chronicle has no `LICENSE` file at its root, so by default you
-  can't redistribute it or derivatives. Kazarov is MIT. Before publishing an
-  APK that contains any `ps2/src` or `port/src` translation, ask
-  TheMoonPeople for a license or permission (their Discord is in the
-  README). A Rust rewrite derived from their decomp is still a derivative.
-- **No game data in the APK, ever.** The player supplies their own ISO, as
-  with doukutsu-rs and the existing port's first-run flow.
-- Pin the toolchain: stable Rust, NDK r27+, `cargo-ndk`, minSdk 26 (AAudio,
-  Vulkan 1.0+), targetSdk current.
+On a phone, the controls doukutsu-rs builds into its game logic become an SDL
+virtual gamepad. Everything above it (`libpad.cpp`, button glyphs, menus)
+sees a normal controller:
 
-### Phase 1: Formats and data in Rust (2–4 weeks)
+- **Left half:** floating analog stick (left stick).
+- **Right half, drag:** camera (right stick, which the game's camera already
+  reads).
+- **Right cluster:** ✕ ○ △ □. Top edges: L1/R1 (L1 is lock-on/guard), L2/R2.
+  Top centre: Start/Select.
+- **Menus and naming screen:** tap acts as the mouse pointer the port already
+  supports (`menu_mouse`, `name_mouse`).
+- **Georama:** one finger moves the cursor, two fingers rotate and zoom.
+- The overlay hides when a real controller connects. That's
+  `SDL_EVENT_GAMEPAD_ADDED`, and the glyph sets in `port/glyphs` already
+  follow the device.
+- Drawing: one translucent `gfx::Draw2D` pass after the game's frame, in the
+  window's logical mapping, as `platform/overlay.cpp` draws the FPS text.
+  The layout is in safe-area insets from `ChronicleActivity`, as
+  doukutsu-rs's `updateCutouts`.
 
-- `dc-formats`: zero-copy readers (`&[u8]`, little-endian, `zerocopy` or
-  `binrw`), with no `unsafe` beyond the parsing crates.
-- `dc-data`: a CLI matching `dcdata extract`, including NTSC filename mapping,
-  palette fix-up for PAL weapon icon sheets, `KnownReleases` fingerprints, and
-  `languages.json`.
-- **Exit:** for PAL and NTSC ISOs, `dc-data extract` makes a tree that is
-  byte-for-byte the same as C++ `dcdata`'s (CI diff). TIM2/MDT decoders match
-  `tex_decode_test` fixtures.
+## 6. If a GPU requirement is missing
 
-This phase runs anywhere and needs no game binary. It's the safest place to
-start.
+Not expected on the S26, but needed for older phones:
 
-### Phase 2: Rust host under the C++ game (6–10 weeks)
+- `dualSrcBlend` missing: a second pipeline variant that writes the blend
+  factor to a second attachment and blends in a resolve pass.
+- Descriptor limits below 8192: page the texture array (the game's VRAM
+  rectangles map onto pages).
+- Vulkan < 1.3: out of scope. Those phones would need the wgpu path from the
+  earlier version of this plan.
 
-1. `cpp/CMakeLists.txt` builds `ps2/src` + `port/src` (with
-   `port_override.py`, as now) into `libdcgame.a` without `dc_host`, and links
-   against `shim/`.
-2. `shim/` implements every `gfx::`, platform and audio function as a
-   one-line forward to `extern "C"` functions exported by `dc-host-ffi`. Use
-   `cbindgen` for headers; `cxx` only if a signature needs C++ types.
-3. **`dc-gfx` on wgpu** (Vulkan, GLES 3.1, Metal, DX12). That covers Android
-   devices that the Vulkan 1.3 renderer leaves out. Required redesigns:
-   - **Dual-source blend:** use `wgpu::Features::DUAL_SOURCE_BLENDING` where
-     the device has it. Otherwise fall back to two passes per affected draw,
-     or to a shader that reads the previous colour (a copy of the target) for
-     the few GS blend modes that need the second factor.
-   - **Bindless textures:** use `TEXTURE_BINDING_ARRAY` where supported.
-     Otherwise use a texture atlas/page cache with per-draw bind groups,
-     batched by page. The game's VRAM-rectangle model maps well to pages.
-   - Display lists, readback, snapshot, and present modes keep the semantics
-     in `gfx/README.md`. That README is the spec.
-4. `dc-audio`: translate kazarov `audio/` (~3k lines) and output through
-   `cpal` (AAudio/Oboe on Android).
-5. `dc-platform`: Backend trait; `backend-sdl3` first.
-6. **Exit:** `chronicle --headless --input boot.script` gives frames that
-   pass a perceptual diff (SSIM ≥ 0.99, exact on 2D-only screens) against
-   `darkcloud` on lavapipe, for boot → title → Norune walk → dungeon floor 1.
-   That runs in CI.
+## 7. Phases
 
-### Phase 3: Android APK (3–5 weeks, overlaps Phase 2's tail)
+| # | Phase | Exit |
+|---|---|---|
+| 0 | Permission: Chronicle has **no LICENSE file** (Kazarov is MIT). Ask TheMoonPeople before publishing an APK. Never ship game data | Written OK |
+| 1 | `android/` scaffold: SDL3 + Corrosion + Rust `SDL_main` that opens a window and clears it through Kazarov's renderer | APK installs on the S26 and logcat shows `RendererInit` choosing the GPU |
+| 2 | Game linked in: the section 3 fixes, `darkcloud_game` static library | Boots to the language select from data copied in through the Files app |
+| 3 | Data onboarding: ISO picked through SAF, extracted on the phone, with progress | Fresh install → pick ISO → title screen |
+| 4 | Touch virtual gamepad + overlay; lifecycle (surface recreate on resume, autosave on `onStop`, back → pause) | Norune walked, dungeon floor 1 fought, saved and reloaded, all with touch only; Bluetooth pad also works |
+| 5 | CI: an `android` job like doukutsu-rs's (`sdkmanager --package_file`, `gradlew assembleRelease`, `apksigner` with secrets) | Signed APK artifact on every push |
+| 6 | Rust takes over, unit by unit, as the C++ port did with `PORT_OVERRIDE`. Start with formats/`dcdata`, then audio, then game units from leaves to roots, each checked against the C++ build with `--input` replays and per-tick state hashes | Share of the code in Rust goes up; the APK keeps working the whole time |
 
-- `app/`: Gradle, `GameActivity` (AndroidX games), and a `cargo-ndk` task
-  building `chronicle-android` for `arm64-v8a` (and `x86_64` for the
-  emulator). `libdcgame.a` is cross-compiled with the NDK's clang (C++26
-  needs NDK clang ≥ 19; check `std` features, since libc++ lags).
-- **Data onboarding:** first run opens a Storage Access Framework picker for
-  the ISO and runs `dc-data extract` from the SAF stream into
-  `getFilesDir()/data`, with a progress UI. Saves go in `getFilesDir()/save`,
-  and saves can be exported or imported through SAF.
-- **Touch controls** (overlay drawn by `dc-gfx` in the 640×480 logical space,
-  with a layout editor as in doukutsu-rs):
-  - left: floating analog stick; right: ✕ ○ △ □ cluster; shoulders L1/R1/L2/R2
-    on the top edges; Start/Select at the top centre.
-  - camera: drag on the right half of the screen (feeds the existing
-    mouse-look path).
-  - menus: the port already accepts a mouse pointer on the Options and naming
-    screens (`menu_mouse`, `name_mouse`), so tap goes through that path.
-  - Georama editor: one-finger drag moves the cursor, two-finger rotates and
-    zooms the camera.
-  - The overlay hides automatically when a controller connects (SDL/Android
-    gamepad mapping; the glyph sets in `port/glyphs` already cover Xbox, PS
-    and Switch).
-- **Lifecycle:** handle surface loss on pause (recreate the wgpu surface),
-  autosave on `onStop` through the existing save-state path, request audio
-  focus, keep the screen on while playing, and handle back-button → pause
-  menu.
-- **Performance budget:** 60 ticks/s on a Snapdragon 7-series or Mali-G610
-  class device, under 1.5 GB RSS. Profile the arena sizes in
-  `port/src/dataset.cpp`.
-- **Exit:** a signed release APK installs on 3 reference devices (one each of
-  Adreno, Mali, and PowerVR or Xclipse). It extracts a PAL ISO, reaches Norune,
-  saves, survives being backgrounded, and plays with touch and with a
-  Bluetooth pad. CI uploads the APK as an artifact.
+Phases 1–5 give a playable APK with the game logic still in C++. Phase 6 is
+the long Rust port, and it never stops the APK from building.
 
-### Phase 4: Moving game units to Rust (ongoing, the long part)
+## 8. First week
 
-Per unit, the same loop as the C++ port's `PORT_OVERRIDE` (this is how
-Chronicle itself got here):
-
-1. Pick a unit. Draft with `c2rust` from the preprocessed `ps2/src` copy, then
-   rewrite it into safe, idiomatic Rust in `dc-game`, keeping retail names.
-2. Export the unit's public functions with `#[no_mangle] extern "C"` under
-   the mangled names (or through a shim) and drop the C++ definitions with
-   `port_override.py`. Game state stays in the C++ globals until the unit's
-   owner moves, with access through `dc-host-ffi` accessors.
-3. **Oracle gate:** `tools/oracle` runs both builds on the input-script corpus
-   and compares a per-tick hash of game state (player, RNG seed, script VM
-   PC/stack, entity tables) plus framebuffers. Any divergence fails CI.
-
-Order, from leaves to roots: `mathutil`/`vu0_ops` → collision (`collisionmdt`,
-`bound`) → data loaders (`dataread`, `chararead`, `itemdata`) → script VM
-(`runscript`, `scriptinterpreter`, `editmapscript`) → effects → menus →
-battle (`ebattle`, `btsysscript`, `monstorunit`) → Georama (`edit*`) → town
-and dungeon loops (`gameloop`, `dun/*`) → title overlay → `main`.
-
-Track progress the way decomp.dev tracks matching: the share of functions in
-Rust, shown in the README.
-
-### Phase 5: Pure Rust (when Phase 4 hits 100%)
-
-Delete `cpp/` and `shim/`, so neither Android nor desktop needs clang. Turn
-`dc-host-ffi` into ordinary Rust modules, and move globals into owned
-`Game` state. Optional extras once the code is Rust, as in doukutsu-rs:
-widescreen camera, higher internal resolution, and mod/translation loading.
-
-## 6. Risks
-
-| Risk | Mitigation |
-|---|---|
-| Mobile GPUs lack dual-source blend or bindless | wgpu feature detection with the fallbacks in Phase 2.3. Test on Mali early |
-| C++26 not fully supported by NDK libc++ | Build `libdcgame.a` with the NDK's clang and its own libc++ (`c++_static`). Patch the few gaps in `port/src` |
-| The game assumes desktop RAM | Measure arenas. Use mmap-backed reads for packs instead of loading them whole |
-| Rust divergence hard to find | Per-tick state hashes, plus bisection by tick in `tools/oracle` |
-| Upstream Chronicle keeps changing | Follow upstream as a submodule. Phase 4 translates only units whose upstream code has settled |
-| Licensing | Phase 0: get permission before any public release |
-
-## 7. First week
-
-1. Create the workspace, CI (fmt, clippy, test), and `dc-formats` with the
-   ISO9660 and `DATA.HD2`/`DATA.DAT` readers.
-2. Port `dcdata`'s file-index and pack reader. Diff its output against
-   `port/build/pc/dcdata extract` on your ISO.
-3. Read `tools/kazarov/port/gfx/README.md` end to end and turn it into the
-   `dc-gfx` trait and test list.
-4. Run the C++ port on one Android device by hand (SDL3 + its Vulkan
-   renderer) to collect real device-capability data. It costs a day and
-   confirms whether the Phase 2.3 fallbacks are needed.
+1. Install the Android SDK, NDK r29+ and `rustup target add aarch64-linux-android`.
+2. Copy `drsandroid/` to `android/`, then swap in SDL3, the
+   `org.libsdl.app.SDLActivity` from SDL3's `android-project`, and a Rust
+   `SDL_main` that calls `SDL_Vulkan_CreateSurface`.
+3. Run it on the S26 and read the renderer's device report in
+   `adb logcat -s RustStdoutStderr`.
+4. Add `add_subdirectory(${CHRONICLE_ROOT})` and work through section 3 until it
+   links.
