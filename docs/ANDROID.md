@@ -71,7 +71,7 @@ which changes nothing on x86 or Apple arm64, where `char` is signed already.
 | `port/src/platform/firstrun.cpp` | Taps press the first-run buttons (touch makes no mouse events), the disc dialog has no filter (Android filters by MIME type, and disc images are `application/octet-stream`), and a `content://` answer is resolved by the crate off the activity's thread |
 | `port/src/platform/android_setup.cpp` | The setup screen's disc identification and extraction, as C functions for `setup.rs` |
 | `port/src/main.cpp` (`PumpAndroid`) | The app menu's pause, speed and settings, between ticks |
-| `port/src/platform/config.cpp` | `ConfigSetValue`, one setting by name; `video.cover` and `video.title_aspect` (both on every platform; Android's defaults are `fit` and `4:3`) |
+| `port/src/platform/config.cpp` | `ConfigSetValue`, one setting by name; `video.cover` and `video.title_aspect` (both on every platform; Android's default for `video.cover` is `fit`) |
 | `port/src/fireomni.cpp` | The torches' heat shimmer (`CFireOmni::DrawRaster`) is left out for a torch wholly past the 4:3 frame's sides, where it would copy from outside the 640-wide `blender` target; on every platform |
 | `android/patches/kazarov-0001-android-surface.patch` | Android takes the window's surface away when the app leaves the screen; the renderer makes a new `VkSurfaceKHR` when it returns or when Vulkan reports the old one lost. The swapchain uses the identity transform, so the compositor turns the landscape image onto the phone's portrait panel (the renderer does not pre-rotate), and Android's resulting `VK_SUBOPTIMAL_KHR` on every frame is not taken for a resize |
 | `android/patches/kazarov-0002-safe-area-and-cover-fit.patch` | The HUD anchors to the window's safe area, and `FrameLayout::cover` with `CoverMode::Fit` keeps full-frame pictures 4:3 with black bars (`KZ_GFX_COVER_MODE` tells the game the Kazarov it builds with has it) |
@@ -165,9 +165,9 @@ world; nothing of the game is stretched:
   edges), not at the glass's edge.
 - **Full-screen pictures** (cutscene stills) are kept at 4:3 with black bars, `video.cover` `fit`, which
   is Android's default; the menu's *Full-screen pictures* setting stretches them instead.
-- **The title, the attract movie and the opening** are framed for 4:3 and show far past it on a phone, so
-  they play letterboxed (`video.title_aspect` `4:3`, Android's default; the menu's *Title & opening*).
-  The game itself fills the screen again from the language select on.
+- **The title, the attract movie and the opening** fill the screen too (`video.title_aspect` `wide`).
+  They are framed for 4:3, so more of their scenes shows at the sides than the PS2 showed; the menu's
+  *Title & opening* plays them in the 4:3 frame instead.
 - **Torches' heat shimmer** past the frame's sides is left out rather than drawn from outside its
   buffer (the fire itself still burns there).
 

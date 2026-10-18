@@ -56,14 +56,12 @@ struct Config : HostSettings {
 #ifdef __ANDROID__
     // A phone is about twice as wide as it is tall, where a stretched 4:3 picture shows.
     ConfigCover cover = ConfigCover::Fit;
-    // video.title_aspect: the title screen, the attract movie and the opening in the 4:3 frame
-    // ("4:3") or filling the window as the rest of the game does ("wide"). Their scenes are framed
-    // for 4:3, and a phone shows far past that frame.
-    bool title_letterbox = true;
 #else
     ConfigCover cover = ConfigCover::Stretch;
-    bool        title_letterbox = false;
 #endif
+    // video.title_aspect: the title screen, the attract movie and the opening in the 4:3 frame
+    // ("4:3") or filling the window as the rest of the game does ("wide").
+    bool title_letterbox = false;
     float             ui_scale = 1.0f;
     float             detail_distance = 0.0f;
     float             shadow_distance = 0.0f;

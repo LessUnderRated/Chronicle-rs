@@ -53,6 +53,7 @@ public class ChronicleActivity extends SDLActivity implements TouchOverlay.Liste
         super.onCreate(savedInstanceState);
         // Opened by the setup screen already, unless the game was started some other way.
         CrashReport.open(this);
+        widenTheTitleOnce();
         overlay = new TouchOverlay(this, this);
         addContentView(overlay, new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
             ViewGroup.LayoutParams.MATCH_PARENT));
@@ -61,6 +62,18 @@ public class ChronicleActivity extends SDLActivity implements TouchOverlay.Liste
 
     private int dp(int value) {
         return Math.round(value * getResources().getDisplayMetrics().density);
+    }
+
+    /**
+     * Before 0.5.5 the title and the opening kept to 4:3 by default, which config.json then saved; an
+     * update brings them to the wide screen once, and the menu's Title & opening still goes back.
+     */
+    private void widenTheTitleOnce() {
+        android.content.SharedPreferences prefs = getSharedPreferences("defaults", MODE_PRIVATE);
+        if (prefs.getInt("title-aspect", 0) < 1) {
+            Native.setSetting("video.title_aspect", "\"wide\"");
+            prefs.edit().putInt("title-aspect", 1).apply();
+        }
     }
 
     /**
@@ -202,8 +215,8 @@ public class ChronicleActivity extends SDLActivity implements TouchOverlay.Liste
     private static final Setting[] SETTINGS = {
         new Setting(R.string.setting_aspect, "video.aspect", "\"auto\"", new String[] {"Wide (fills the screen)", "4:3"},
             new String[] {"\"auto\"", "\"4:3\""}),
-        new Setting(R.string.setting_title_aspect, "video.title_aspect", "\"4:3\"", new String[] {"4:3", "Wide"},
-            new String[] {"\"4:3\"", "\"wide\""}),
+        new Setting(R.string.setting_title_aspect, "video.title_aspect", "\"wide\"", new String[] {"Wide", "4:3"},
+            new String[] {"\"wide\"", "\"4:3\""}),
         new Setting(R.string.setting_cover, "video.cover", "\"fit\"", new String[] {"4:3 with bars", "Stretched"},
             new String[] {"\"fit\"", "\"stretch\""}),
         new Setting(R.string.setting_ui_scale, "video.ui_scale", "1.0", percent(50, 200, 10), scales(50, 200, 10)),
