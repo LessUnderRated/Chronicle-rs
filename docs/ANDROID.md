@@ -25,7 +25,10 @@ converted for Android. The game's own assets are read in their PS2 formats, as o
 
 ### The Rust crate (`android/src`)
 
-- `lib.rs`: `SDL_main`. Sends the game's stdout and stderr to logcat, makes `data/` and `save/` in the
+- `logcat.rs`: the game's stdout and stderr to logcat and to `save/logs/chronicle.log` (the run
+  before kept as `chronicle-previous.log`), and a fatal-signal handler that writes the signal and a
+  backtrace there before Android's own handler ends the process.
+- `lib.rs`: `SDL_main`. Opens the log, makes `data/` and `save/` in the
   app's internal storage, installs the port's files, starts the touch controls and calls the game's
   main (`dc_main`, `port/src/main.cpp`) with `--data` and `--save`.
 - `storage.rs`: the APK assets listed in `chronicle-assets.txt` are copied into `save/` (the game reads
@@ -94,8 +97,11 @@ which takes a while; later builds are incremental. `-Pchronicle.abis=arm64-v8a,x
 emulator's ABI.
 
 A release is signed with the key named by `CHRONICLE_KEYSTORE`, `CHRONICLE_KEYSTORE_PASSWORD`,
-`CHRONICLE_KEY_ALIAS` and `CHRONICLE_KEY_PASSWORD`, or with the debug key when they are unset, so a
-local build always installs. `.github/workflows/android.yml` builds it on every push with the
+`CHRONICLE_KEY_ALIAS` and `CHRONICLE_KEY_PASSWORD`, or with `android/app/chronicle-dev.jks` (password
+and alias `chronicle`) when they are unset. That key is public, so it says nothing about who built an
+APK; it is there so that every build installs over the last and keeps the extracted disc and the
+saves. Releases before 0.5.0 were signed with a throwaway key: going from one of those takes an
+uninstall. `.github/workflows/android.yml` builds it on every push with the
 `ANDROID_KEYSTORE*` secrets if they exist, and uploads the APK. A push whose `versionName` has no release yet
 also publishes the APK as the GitHub release `android-v<version>`.
 
@@ -207,7 +213,20 @@ the view and its editor are written here.
   dungeon menus.
 - **Edit / hide touch controls** (above).
 - **Import saves from a PS2 memory card** (below).
+- **Share log**: this run's log, as text, to any app that takes it.
 - **Quit**.
+
+## When it crashes
+
+Every run writes `save/logs/chronicle.log` (the Files app shows it under Chronicle). When the last run
+crashed, stopped responding, quit with an error, or was killed while on screen (Android's
+`ApplicationExitInfo` says which), the next start says so first and offers that run's log: **Share
+log** or **Copy log**. A native crash's lines look like a tombstone's
+(`#03 pc 0x3a364c libmain.so (…)`); each release carries its unstripped `libmain.so` to read them:
+
+```sh
+llvm-symbolizer --obj=libmain-0.5.0-arm64-symbols.so 0x3a364c
+```
 
 ## Saves from a PS2 memory card
 
@@ -238,7 +257,7 @@ globals; until then the game saves where it always has, with the autosave on arr
 ## Where it stands
 
 The APK builds and its native libraries link for arm64 with the NDK; it has not yet been run on a
-device. What to look at on the first run:
+device. What to look at on the first run (or in a shared log):
 
 ```sh
 adb logcat -s Chronicle SDL

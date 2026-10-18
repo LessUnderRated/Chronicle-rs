@@ -2,8 +2,8 @@
 # host crate in android/ linked in, and SDL3's Java activity, as doukutsu-rs builds its APK
 # (reference/doukutsu-rs, .github/workflows/ci.yml, build_android). No game data is needed or shipped.
 #
-# The APK is signed by the key in the ANDROID_KEYSTORE secrets when they are set, and by the runner's
-# debug key otherwise, so every run's artifact installs.
+# The APK is signed by the key in the ANDROID_KEYSTORE secrets when they are set, and otherwise by
+# android/app/chronicle-dev.jks, so each build installs over the last.
 #
 # A push whose app version (versionName, android/app/build.gradle.kts) has no release yet publishes
 # the APK as the release android-v<version>, the tag made at the commit pushed; so does pushing that
@@ -87,7 +87,7 @@ jobs:
         if: github.event_name == 'push'
         env:
           GH_TOKEN: ${{ github.token }}
-          SIGNED_BY: ${{ secrets.ANDROID_KEYSTORE != '' && 'the project''s release key' || 'this run''s debug key' }}
+          SIGNED_BY: ${{ secrets.ANDROID_KEYSTORE != '' && 'the project''s release key' || 'the development key in the repository (android/app/chronicle-dev.jks)' }}
         run: |
           version=$(sed -n 's/^ *versionName = "\(.*\)"$/\1/p' android/app/build.gradle.kts)
           tag="android-v${version}"
@@ -101,6 +101,9 @@ jobs:
           fi
           apk="Chronicle-${version}-arm64.apk"
           cp android/app/build/outputs/apk/release/app-release.apk "$apk"
+          # The APK's libmain.so is stripped; this one turns the addresses in a crash log into names.
+          symbols="libmain-${version}-arm64-symbols.so"
+          cp "$(find android/app/build/intermediates/cxx -path '*arm64-v8a/libmain.so' | head -n 1)" "$symbols"
           sha=$(sha256sum "$apk" | cut -d' ' -f1)
           cat > notes.md <<NOTES
           Chronicle ${version} for Android: arm64 phones with Vulkan 1.3, Android 13 or later.
@@ -111,6 +114,9 @@ jobs:
           Signed with ${SIGNED_BY}. An APK signed with another key does not install over it; back up
           \`save/\` (Files app, Chronicle) before switching.
 
+          If it crashes, open it again: it offers the log of the run that crashed to share.
+          \`${symbols}\` is for reading such a log; you don't need it to play.
+
           SHA-256: \`${sha}\`
           NOTES
-          gh release create "$tag" "$apk" --target "$GITHUB_SHA" --title "Chronicle ${version} (Android)" --notes-file notes.md
+          gh release create "$tag" "$apk" "$symbols" --target "$GITHUB_SHA" --title "Chronicle ${version} (Android)" --notes-file notes.md

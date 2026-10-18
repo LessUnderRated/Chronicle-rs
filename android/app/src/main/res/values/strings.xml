@@ -35,6 +35,7 @@
     <string name="menu_hide_controls">Hide touch controls</string>
     <string name="menu_show_controls">Show touch controls</string>
     <string name="menu_import_card">Import saves from a PS2 memory card</string>
+    <string name="menu_share_log">Share log</string>
     <string name="menu_quit">Quit</string>
     <string name="menu_back">Back</string>
 
@@ -62,4 +63,11 @@
     <string name="import_slot">imported as save %1$d</string>
     <string name="import_converted">It was made by another release of the game (%1$s): it is given this one\'s version and should load, but that is untried.</string>
     <string name="import_where">The saves are on the game\'s load screen.</string>
+    <string name="crash_title">Chronicle closed unexpectedly</string>
+    <string name="crash_message">The last time it ran, Chronicle crashed or quit with an error. Its log says where; share it (or copy it and paste it) with whoever is fixing it.</string>
+    <string name="crash_continue">Continue</string>
+    <string name="log_share">Share log</string>
+    <string name="log_copy">Copy log</string>
+    <string name="log_copied">Log copied</string>
+    <string name="log_subject">Chronicle log</string>
 </resources>

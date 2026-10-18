@@ -50,6 +50,8 @@ public class ChronicleActivity extends SDLActivity implements TouchOverlay.Liste
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        // Opened by the setup screen already, unless the game was started some other way.
+        CrashReport.open(this);
         overlay = new TouchOverlay(this, this);
         addContentView(overlay, new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
             ViewGroup.LayoutParams.MATCH_PARENT));
@@ -95,6 +97,7 @@ public class ChronicleActivity extends SDLActivity implements TouchOverlay.Liste
             getString(R.string.menu_edit_controls),
             controls,
             getString(R.string.menu_import_card),
+            getString(R.string.menu_share_log),
             getString(R.string.menu_quit),
         };
         dialog()
@@ -120,6 +123,10 @@ public class ChronicleActivity extends SDLActivity implements TouchOverlay.Liste
                         pickCard();
                         return;
                     case 6:
+                        CrashReport.share(this, CrashReport.currentRun(this));
+                        resume();
+                        return;
+                    case 7:
                         finishAffinity();
                         System.exit(0);
                         return;

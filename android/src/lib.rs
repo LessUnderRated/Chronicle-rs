@@ -2,7 +2,8 @@
 //! drsandroid/): SDL's own activity loads libmain.so and calls SDL_main, defined here. This crate sets
 //! up what Android does differently, then runs the game's main (port/src/main.cpp, `dc_main`).
 //!
-//! - logcat: the game's stdout and stderr, which Android otherwise discards
+//! - logcat: the game's stdout and stderr, which Android otherwise discards, also kept in a file with
+//!   where a crash happened, for the setup screen to offer for sharing
 //! - storage: data/ and save/ in the app's internal storage, the port's own files from the APK, and
 //!   the disc image the first-run screen's file selector picks
 //! - touch: the touch screen as a gamepad, under the overlay the activity draws (jni.rs)
@@ -36,12 +37,13 @@ extern "C" {
 
 #[no_mangle]
 pub extern "C" fn SDL_main(_argc: i32, _argv: *const *const c_char) -> i32 {
-    logcat::redirect_stdio();
-    std::panic::set_hook(Box::new(|info| logcat::write(&format!("panic: {info}"))));
-
     let root = storage::internal_root();
     let data = root.join("data");
     let save = root.join("save");
+    // The activity has opened it already (CrashReport.java); this covers a start without it.
+    logcat::open(&save.join("logs"));
+    std::panic::set_hook(Box::new(|info| logcat::write(&format!("panic: {info}"))));
+
     let _ = std::fs::create_dir_all(&save);
     if let Err(error) = std::env::set_current_dir(&root) {
         logcat::write(&format!("cannot enter {}: {error}", root.display()));
@@ -73,5 +75,10 @@ pub extern "C" fn SDL_main(_argc: i32, _argv: *const *const c_char) -> i32 {
     ));
     let status = unsafe { dc_main(args.len() as i32, argv.as_ptr()) };
     logcat::write(&format!("the game exited with {status}"));
+    if status != 0 {
+        // SDL's activity would only close; ending the process with the status records the failure
+        // for the next start to report (CrashReport.java).
+        std::process::exit(status);
+    }
     status
 }

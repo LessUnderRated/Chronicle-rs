@@ -152,6 +152,20 @@ fn method(name: &str, sig: &str, fn_ptr: *mut c_void) -> NativeMethod {
     }
 }
 
+extern "system" fn open_log(mut env: JNIEnv, _: JClass, dir: JString) {
+    if let Some(dir) = rust(&mut env, &dir) {
+        crate::logcat::open(Path::new(&dir));
+    }
+}
+
+extern "system" fn log_line(mut env: JNIEnv, _: JClass, line: JString) {
+    if let Some(line) = rust(&mut env, &line) {
+        for line in line.lines() {
+            crate::logcat::write(line);
+        }
+    }
+}
+
 /// # Safety
 ///
 /// Called by the JVM with its own pointer when the library loads.
@@ -164,6 +178,8 @@ pub unsafe extern "system" fn JNI_OnLoad(vm: *mut jni::sys::JavaVM, _: *mut c_vo
         return JNI_VERSION_1_6;
     };
     let methods = [
+        method("openLog", "(Ljava/lang/String;)V", open_log as *mut c_void),
+        method("log", "(Ljava/lang/String;)V", log_line as *mut c_void),
         method(
             "defaultLayout",
             "(IIFFFF)Ljava/lang/String;",

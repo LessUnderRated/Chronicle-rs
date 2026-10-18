@@ -7,6 +7,12 @@ package io.github.lessunderrated.chronicle;
 final class Native {
     private Native() {}
 
+    /** Starts this run's log in dir, keeping the last run's (android/src/logcat.rs). */
+    static native void openLog(String dir);
+
+    /** A line, or several, for the log. */
+    static native void log(String text);
+
     /** The default touch layout for a window and its safe-area insets, as JSON. */
     static native String defaultLayout(int width, int height, float left, float top, float right, float bottom);
 

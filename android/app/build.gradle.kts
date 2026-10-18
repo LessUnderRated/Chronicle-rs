@@ -70,8 +70,8 @@ android {
         // Vulkan 1.3's entry points are in the NDK's libvulkan.so from API 33; the renderer needs 1.3.
         minSdk = 33
         targetSdk = 36
-        versionCode = 4
-        versionName = "0.4.0"
+        versionCode = 5
+        versionName = "0.5.0"
 
         ndk {
             abiFilters += listOf("arm64-v8a")
@@ -99,14 +99,21 @@ android {
     }
 
     signingConfigs {
-        // A release is signed by the key CI is given; without one, by the debug key (below), so the APK
-        // still installs.
-        System.getenv("CHRONICLE_KEYSTORE")?.let { keystore ->
-            create("release") {
+        // A release is signed by the key CI is given. Without one, by chronicle-dev.jks, which is in
+        // the repository: public, so it proves nothing about who built an APK, but every build signed
+        // with it installs over the last one, keeping the extracted disc and the saves.
+        create("release") {
+            val keystore = System.getenv("CHRONICLE_KEYSTORE")
+            if (keystore != null) {
                 storeFile = file(keystore)
                 storePassword = System.getenv("CHRONICLE_KEYSTORE_PASSWORD")
                 keyAlias = System.getenv("CHRONICLE_KEY_ALIAS")
                 keyPassword = System.getenv("CHRONICLE_KEY_PASSWORD")
+            } else {
+                storeFile = file("chronicle-dev.jks")
+                storePassword = "chronicle"
+                keyAlias = "chronicle"
+                keyPassword = "chronicle"
             }
         }
     }
@@ -114,7 +121,7 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = false
-            signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.getByName("release")
         }
         debug {
             applicationIdSuffix = ".debug"

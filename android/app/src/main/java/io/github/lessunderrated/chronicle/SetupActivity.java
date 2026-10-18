@@ -46,7 +46,7 @@ public class SetupActivity extends Activity {
     private static native String nativeIdentify(String path);
     private static native String nativeExtract(String path, String dataDir, Progress progress);
 
-    private static synchronized void loadNative() {
+    static synchronized void loadNative() {
         if (!sLoaded) {
             System.loadLibrary("SDL3");
             System.loadLibrary("main");
@@ -74,6 +74,17 @@ public class SetupActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        CrashReport.open(this);
+        String failure = CrashReport.lastRunFailure(this);
+        if (failure != null) {
+            setContentView(backdrop());
+            CrashReport.showFailure(this, failure, this::start);
+            return;
+        }
+        start();
+    }
+
+    private void start() {
         if (dataReady()) {
             launchGame();
             return;
