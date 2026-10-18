@@ -15,8 +15,8 @@ extracts it on the phone.
 | `libSDL3.so` | SDL at the tag in `android/sdl3-tag.txt` | Window, Vulkan surface, input, audio, file dialog |
 | `libc++_shared.so` | The NDK | C++ runtime |
 
-plus SDL's Java activity (`org.libsdl.app`, compiled from the same SDL checkout), `ChronicleActivity`,
-`ChronicleDocumentsProvider`, and the port's own files as assets (`port/lang`, the message font,
+plus SDL's Java activity (`org.libsdl.app`, compiled from the same SDL checkout), `SetupActivity` (the
+launcher: the disc and its extraction), `ChronicleActivity` (the game), `ChronicleDocumentsProvider`, and the port's own files as assets (`port/lang`, the message font,
 `port/glyphs`).
 
 The renderer is the port's Vulkan renderer, as on the PC. Its shaders are compiled from GLSL to
@@ -36,6 +36,10 @@ converted for Android. The game's own assets are read in their PS2 formats, as o
   (removed at the next start once the data is extracted).
 - `touch.rs`: the touch screen as an SDL virtual gamepad, and the triangles of its overlay. The game
   sees a controller: button prompts, the camera and the menus work as with a pad.
+- `setup.rs`: the JNI methods of the setup screen, `SetupActivity` (below): a readable path for the
+  picked file's descriptor, what the disc is, and its extraction with progress, through
+  `port/src/platform/android_setup.cpp`, which calls dcdata and the first-run screen's
+  `FirstRunExtract` as the PC port does.
 - `sdl.rs`: the SDL3 declarations the crate uses, written against the pinned SDL.
 
 `cargo test` in `android/` runs the touch layout's tests on the host, against stand-ins for SDL
@@ -52,6 +56,7 @@ All under `#ifdef __ANDROID__` or `if(ANDROID)`; the PC builds are unchanged.
 | `port/src/runtime.cpp` | Bionic does not declare `rand`/`srand` `noexcept` |
 | `port/src/main.cpp` | `dc_main`, which `SDL_main` calls |
 | `port/src/platform/firstrun.cpp` | Taps press the first-run buttons (touch makes no mouse events), the disc dialog has no filter (Android filters by MIME type, and disc images are `application/octet-stream`), and a `content://` answer is resolved by the crate off the activity's thread |
+| `port/src/platform/android_setup.cpp` | The setup screen's disc identification and extraction, as C functions for `setup.rs` |
 | `port/src/touch_overlay.cpp`, `port/src/gameloop.cpp` | The touch controls are recorded into the overlay list the FPS badge uses, so they are drawn over every presented frame |
 | `android/patches/kazarov-0001-android-surface.patch` | Android takes the window's surface away when the app leaves the screen; the renderer makes a new `VkSurfaceKHR` when it returns or when Vulkan reports the old one lost. The swapchain uses the identity transform, so the compositor turns the landscape image onto the phone's portrait panel (the renderer does not pre-rotate), and Android's resulting `VK_SUBOPTIMAL_KHR` on every frame is not taken for a resize |
 
@@ -100,10 +105,30 @@ adb install -r android/app/build/outputs/apk/release/app-release.apk
 
 or copy the APK to the phone and open it (allow installs from that app when asked).
 
-On first start the game shows its "game data needed" screen. Tap **DISC IMAGE** and pick your PAL or
-NTSC disc image in the system picker; the game extracts it into the app's storage (a few minutes) and
-starts. Your files are in the Files app under **Chronicle** (`data/`, `save/`), where saves can be
-copied out and back.
+The game's data comes from your own disc. Make a disc image (ISO) of your PlayStation 2 copy of Dark
+Cloud and put it on the phone (Downloads, a memory card, a cloud drive the picker shows). The first
+start opens the setup screen (`SetupActivity`) instead of the game:
+
+1. **Your Dark Cloud disc**: tap *Choose disc image* and pick the ISO in Android's file picker.
+2. The disc is read and shown: its product code from `SYSTEM.CNF` (`SCUS-97111`, `SCPS-…`,
+   `SCES-50295`), its region, the release the extractor knows it as, its languages and the size of its
+   data, with a check of the free space. Something that is not a Dark Cloud disc is turned down here.
+3. *Extract* copies the data out of the image into the app's storage, with progress and a cancel
+   button (a later run resumes where a cancelled one stopped). The game then starts, and every start
+   after goes straight to it.
+
+| Disc | Product code | Languages | State |
+|---|---|---|---|
+| US (NTSC-U) 1.02 | SCUS-97111 | English (US) | Known release (`KnownReleases`) |
+| Other US printings | SCUS-… | English (US) | By NTSC's file layout |
+| European (PAL) | SCES-50295 | English (UK), French, German, Italian, Spanish | By PAL's layout |
+| Japanese (NTSC-J) | SCPS-… | Japanese | **Experimental**: by the product code alone. The port is built from the PAL game's code and has not been run on Japanese data |
+
+The ISO itself is read where it is (through `/proc/self/fd`, like PPSSPP and Dolphin) and left
+unchanged; where its provider will not allow that, it is copied into the app first and the copy is
+deleted afterwards. Your files are in the Files app under **Chronicle** (`data/`, `save/`), where saves
+can be copied out and back. Deleting `data/` brings the setup screen back on the next start; the game's
+own first-run screen (`port/src/platform/firstrun.cpp`) remains for data that goes missing while it runs.
 
 ## Touch controls
 
@@ -133,3 +158,4 @@ adb logcat -s Chronicle SDL
 - Frame pacing and the S26's refresh rate (the game ticks at 60 Hz and interpolates between ticks).
 - Leaving and returning to the app, and the image's orientation (the surface patch).
 - Whether the picked disc is read through `/proc/self/fd` or copied (logcat says which).
+- A Japanese disc: whether the game gets past the title with its data.

@@ -6,9 +6,12 @@
 //! - storage: data/ and save/ in the app's internal storage, the port's own files from the APK, and
 //!   the disc image the first-run screen's file selector picks
 //! - touch: the touch screen as a gamepad, and the overlay that draws it
+//! - setup: the setup screen's native half, which identifies and extracts the player's disc before
+//!   the game starts
 
 mod logcat;
 mod sdl;
+mod setup;
 mod storage;
 #[cfg(test)]
 mod test_stubs;

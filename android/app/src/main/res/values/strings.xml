@@ -1,3 +1,30 @@
 <resources>
     <string name="app_name">Chronicle</string>
+
+    <string name="setup_title">Your Dark Cloud disc</string>
+    <string name="setup_message">Chronicle plays from the files of your own copy of Dark Cloud. Make a disc image (ISO) of your PlayStation 2 disc, put it on this phone, and choose it here.\n\nThe US (NTSC-U) and European (PAL) releases are supported; the Japanese (NTSC-J) release is experimental.\n\nThe game\'s data, about 1.5 GB, is copied out of the image once. The image itself is left as it is.</string>
+    <string name="setup_choose">Choose disc image</string>
+    <string name="setup_choose_another">Choose another</string>
+    <string name="setup_quit">Quit</string>
+
+    <string name="setup_reading">Reading the disc</string>
+    <string name="setup_copying">Copying the disc into the app: %1$s of %2$s MB</string>
+    <string name="setup_unreadable">The file could not be read</string>
+    <string name="setup_cancelled">Cancelled</string>
+    <string name="setup_not_dark_cloud">That is not a Dark Cloud disc image</string>
+
+    <string name="setup_disc_title">Dark Cloud (%1$s)</string>
+    <string name="setup_serial">Product code: %1$s</string>
+    <string name="setup_release">Release: %1$s</string>
+    <string name="setup_languages">Languages: %1$s</string>
+    <string name="setup_size">Game data: %1$d files, %2$s GB</string>
+    <string name="setup_japanese_note">The Japanese release is experimental: Chronicle is built from the European game\'s code and has not been tried with Japanese data yet.</string>
+    <string name="setup_no_space">There is not enough free space: the data needs %1$s GB and %2$s GB is free.</string>
+    <string name="setup_extract_question">Extract the game data now? It takes a few minutes.</string>
+    <string name="setup_extract">Extract</string>
+
+    <string name="setup_extract_title">Extracting the game data</string>
+    <string name="setup_starting">Starting…</string>
+    <string name="setup_extracting">%1$d of %2$d files, %3$s of %4$s MB</string>
+    <string name="setup_failed">Extraction failed</string>
 </resources>

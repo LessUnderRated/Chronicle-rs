@@ -57,6 +57,10 @@ tree for verification against `DATA.HD2`;
 normalized pack copies live under `data/normalized` and are selected by the
 port's file index. Extract again after updating the port to refresh them.
 
+`dcdata identify <disc image>` says which disc it is without extracting: the product code its
+`SYSTEM.CNF` boots (`SCUS-97111`), the region that code names, the release and the size of its data. A
+Japanese product code makes the data Japanese (0) alone; that release is not yet known to work.
+
 The extractor also writes `languages.json`: the release the disc is and the
 languages it carries, as `LanguageCode` numbers. It knows a release by a
 fingerprint of its `DATA.HD2` (dcdata's `KnownReleases`, which prints the name

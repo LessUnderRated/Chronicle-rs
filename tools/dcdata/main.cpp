@@ -8,7 +8,8 @@ namespace {
 
 int Usage() {
     std::fputs("usage: dcdata extract <iso-or-directory> <data-directory>\n"
-               "       dcdata list <iso-or-directory>\n",
+               "       dcdata list <iso-or-directory>\n"
+               "       dcdata identify <iso-or-directory>\n",
                stderr);
     return 2;
 }
@@ -30,6 +31,15 @@ int List(const std::filesystem::path &source) {
     }
     Describe(archive);
     dcdata::Log(stdout, "{} files, {} bytes\n", records.size(), bytes);
+    return 0;
+}
+
+int Identify(const std::filesystem::path &source) {
+    dcdata::DiscInfo info = dcdata::IdentifyDisc(source);
+    dcdata::Log(stdout, "product code: {}\n", info.serial.empty() ? "none (no SYSTEM.CNF)" : info.serial);
+    dcdata::Log(stdout, "region: {}\n", dcdata::RegionName(info.region));
+    dcdata::Log(stdout, "release: {}\n", info.release.name);
+    dcdata::Log(stdout, "game data: {} files, {} bytes\n", info.files, info.bytes);
     return 0;
 }
 
@@ -66,6 +76,9 @@ int main(int argc, char **argv) {
         }
         if (argc == 3 && std::strcmp(argv[1], "list") == 0) {
             return List(argv[2]);
+        }
+        if (argc == 3 && std::strcmp(argv[1], "identify") == 0) {
+            return Identify(argv[2]);
         }
         return Usage();
     } catch (const std::exception &error) {

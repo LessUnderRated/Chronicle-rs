@@ -4,6 +4,7 @@
 // linking the tool. It includes no game header.
 
 #include <algorithm>
+#include <cctype>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -714,6 +715,13 @@ inline const std::vector<int> &PalLanguages() {
     return languages;
 }
 
+// The Japanese release: Japanese alone. Its data has not been checked against the port, which is
+// built from the PAL game's code.
+inline const std::vector<int> &JapaneseLanguages() {
+    static const std::vector<int> languages = {0};
+    return languages;
+}
+
 inline const std::vector<Release> &KnownReleases() {
     static const std::vector<Release> releases = {
         {"NTSC 1.02",                     294080, 0x806bb1d43be8a8dcULL, NtscLanguages()},
@@ -740,11 +748,130 @@ inline const Release *IdentifyRelease(std::span<const unsigned char> index) {
     return nullptr;
 }
 
-// The release by its index, or for one the table lacks, its family by the file layout: NTSC's
-// languages where the disc has NTSC's system pack alone, PAL's otherwise.
-inline Release ReleaseOf(std::span<const unsigned char> index, const std::vector<Record> &records) {
+// ---- Which disc ----------------------------------------------------------------------------------
+
+enum class Region {
+    Unknown,
+    Usa,
+    Japan,
+    Europe,
+};
+
+// The product code a disc boots, from its SYSTEM.CNF: "BOOT2 = cdrom0:\SCUS_971.11;1" is "SCUS-97111".
+// Empty when there is no BOOT2 line or it names no product code.
+inline std::string ParseBootSerial(std::string_view cnf) {
+    while (!cnf.empty()) {
+        std::size_t      end = cnf.find_first_of("\r\n");
+        std::string_view line = cnf.substr(0, end);
+        cnf = end == std::string_view::npos ? std::string_view() : cnf.substr(end + 1);
+        while (!line.empty() && (line.front() == ' ' || line.front() == '\t')) {
+            line.remove_prefix(1);
+        }
+        if (line.size() < 5 || !EqualsFolded(line.substr(0, 5), "BOOT2")) {
+            continue;
+        }
+        std::size_t equals = line.find('=');
+        if (equals == std::string_view::npos) {
+            return {};
+        }
+        std::string_view value = line.substr(equals + 1);
+        std::size_t      name = value.find_last_of("\\/:");
+        value = name == std::string_view::npos ? value : value.substr(name + 1);
+        value = value.substr(0, value.find(';'));
+        std::string serial;
+        for (char c : value) {
+            if (c == '_' || c == '-') {
+                serial += '-';
+            } else if (std::isalnum(static_cast<unsigned char>(c))) {
+                serial += static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+            } else if (c != '.' && c != ' ') {
+                return {};
+            }
+        }
+        bool shaped = serial.size() == 10 && serial[4] == '-';
+        for (std::size_t i = 0; shaped && i < serial.size(); i++) {
+            shaped = i == 4 || (i < 4 ? std::isalpha(static_cast<unsigned char>(serial[i])) != 0
+                                      : std::isdigit(static_cast<unsigned char>(serial[i])) != 0);
+        }
+        return shaped ? serial : std::string();
+    }
+    return {};
+}
+
+// Sony's product codes name the region a disc was made for in their first four letters.
+inline Region RegionOfSerial(std::string_view serial) {
+    std::string_view prefix = serial.substr(0, 4);
+    for (std::string_view usa : {"SCUS", "SLUS"}) {
+        if (prefix == usa) {
+            return Region::Usa;
+        }
+    }
+    for (std::string_view japan : {"SCPS", "SLPS", "SLPM", "SCAJ", "PAPX", "SCPM"}) {
+        if (prefix == japan) {
+            return Region::Japan;
+        }
+    }
+    for (std::string_view europe : {"SCES", "SLES", "SCED"}) {
+        if (prefix == europe) {
+            return Region::Europe;
+        }
+    }
+    return Region::Unknown;
+}
+
+inline std::string_view RegionName(Region region) {
+    switch (region) {
+        case Region::Usa:
+            return "USA";
+        case Region::Japan:
+            return "Japan";
+        case Region::Europe:
+            return "Europe";
+        case Region::Unknown:
+            break;
+    }
+    return "unknown region";
+}
+
+// The product code the archive's disc boots (ParseBootSerial), from SYSTEM.CNF in an image's root
+// or beside DATA.DAT in a directory. Empty when there is none: a copy of the two data files alone
+// says nothing of its disc.
+inline std::string BootSerial(const Archive &archive) {
+    constexpr std::uint64_t kLimit = 4096;
+    try {
+        std::vector<unsigned char> cnf;
+        if (archive.image) {
+            Iso9660                 iso(archive.source);
+            std::optional<IsoEntry> entry = iso.Find(iso.Root(), "SYSTEM.CNF");
+            if (!entry || entry->directory) {
+                return {};
+            }
+            cnf = ReadExtent({archive.source, std::uint64_t{entry->extent} * kSector, std::min<std::uint64_t>(entry->size, kLimit)});
+        } else {
+            std::error_code error;
+            for (const fs::directory_entry &file : fs::directory_iterator(archive.source, error)) {
+                if (file.is_regular_file(error) && EqualsFolded(file.path().filename().string(), "SYSTEM.CNF")) {
+                    cnf = ReadExtent({file.path(), 0, std::min<std::uint64_t>(file.file_size(error), kLimit)});
+                    break;
+                }
+            }
+        }
+        return ParseBootSerial(std::string_view(reinterpret_cast<const char *>(cnf.data()), cnf.size()));
+    } catch (const std::exception &) {
+        return {};
+    }
+}
+
+// The release by its index, or for one the table lacks, by the region its product code names (a
+// Japanese disc carries Japanese) and otherwise its family by the file layout: NTSC's languages
+// where the disc has NTSC's system pack alone, PAL's otherwise.
+inline Release ReleaseOf(std::span<const unsigned char> index, const std::vector<Record> &records,
+                         std::string_view serial = {}) {
     if (const Release *known = IdentifyRelease(index)) {
         return *known;
+    }
+    if (RegionOfSerial(serial) == Region::Japan) {
+        return {"Japanese release", index.size(), Fnv1a64(index), JapaneseLanguages()};
     }
     bool system_pack = false;
     bool pal_common = false;
@@ -1116,13 +1243,50 @@ inline Summary Extract(const Archive &archive, const fs::path &out, std::FILE *l
         Fail("write error on {}", index_copy.string());
     }
     Normalize(out, records);
-    Release release = ReleaseOf(hd2, records);
+    std::string serial = BootSerial(archive);
+    Release     release = ReleaseOf(hd2, records, serial);
+    if (!serial.empty()) {
+        Log(log, "disc: {} ({})\n", serial, RegionName(RegionOfSerial(serial)));
+    }
     Log(log, "release: {}\n", release.name);
     if (release.blank_floor_plates) {
         FillFloorPlates(out);
     }
     WriteLanguages(out, release);
     return summary;
+}
+
+// What a disc is, before anything is extracted from it: for the first-run screens to show and
+// confirm.
+struct DiscInfo {
+    std::string   serial; // empty when the source has no SYSTEM.CNF
+    Region        region = Region::Unknown;
+    Release       release;
+    std::size_t   files = 0;
+    std::uint64_t bytes = 0; // what extraction writes
+};
+
+// Throws as OpenArchive does for a source that is not a Dark Cloud disc or its data files.
+inline DiscInfo IdentifyDisc(const fs::path &source) {
+    Archive                    archive = OpenArchive(source);
+    std::vector<unsigned char> hd2 = ReadExtent(archive.hd2);
+    std::vector<Record>        records = ParseIndex(hd2);
+    DiscInfo                   info;
+    info.serial = BootSerial(archive);
+    info.region = RegionOfSerial(info.serial);
+    info.release = ReleaseOf(hd2, records, info.serial);
+    if (info.region == Region::Unknown) {
+        // No product code: the languages tell NTSC (American English) from PAL.
+        info.region = info.release.languages == NtscLanguages()  ? Region::Usa
+                      : info.release.languages == PalLanguages() ? Region::Europe
+                                                                 : Region::Unknown;
+    }
+    std::size_t duplicates = 0;
+    for (const Record *record : Reachable(records, nullptr, &duplicates)) {
+        info.files++;
+        info.bytes += record->size;
+    }
+    return info;
 }
 
 // Files of the index that are missing from `root` or have the wrong size.

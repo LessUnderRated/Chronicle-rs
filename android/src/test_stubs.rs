@@ -105,3 +105,22 @@ pub extern "C" fn SDL_SetJoystickVirtualButton(
 pub extern "C" fn SDL_GetGamepads(_count: *mut c_int) -> *mut SDL_JoystickID {
     std::ptr::null_mut()
 }
+#[no_mangle]
+pub extern "C" fn chronicle_identify_disc(
+    _source: *const c_char,
+    _json: *mut c_char,
+    _size: usize,
+) -> bool {
+    false
+}
+#[no_mangle]
+pub extern "C" fn chronicle_extract_disc(
+    _source: *const c_char,
+    _root: *const c_char,
+    _tick: Option<unsafe extern "C" fn(*mut c_void, u64, u64, u64, u64) -> bool>,
+    _user: *mut c_void,
+    _error: *mut c_char,
+    _size: usize,
+) -> bool {
+    false
+}

@@ -118,9 +118,6 @@ pub unsafe extern "C" fn chronicle_android_resolve_uri(
 }
 
 fn resolve_uri(uri: *const std::ffi::c_char) -> Option<PathBuf> {
-    use std::io::{Read, Seek, SeekFrom, Write};
-    use std::os::fd::FromRawFd;
-
     let io = unsafe { sdl::SDL_IOFromFile(uri, c"rb".as_ptr()) };
     if io.is_null() {
         crate::logcat::write(&format!("cannot open the chosen file: {}", sdl::error()));
@@ -145,7 +142,22 @@ fn resolve_uri(uri: *const std::ffi::c_char) -> Option<PathBuf> {
         return None;
     }
 
-    // Kept open for the rest of the run: the path below names it.
+    readable_path(fd, &internal_root().join("disc"), &mut |_, _| true)
+}
+
+/// A path the disc reader can open for `fd`, a descriptor of the chosen disc image: /proc/self/fd/N
+/// when the file can be opened again through it (the descriptor then stays open for the rest of the
+/// run, since the path names it), or else a copy in `copy_dir` made from the descriptor, `progress`
+/// hearing of the bytes copied and the total and returning false to stop. It owns `fd` from here: kept
+/// open behind a /proc path, closed otherwise.
+pub fn readable_path(
+    fd: i32,
+    copy_dir: &Path,
+    progress: &mut dyn FnMut(u64, u64) -> bool,
+) -> Option<PathBuf> {
+    use std::io::{Read, Seek, SeekFrom, Write};
+    use std::os::fd::FromRawFd;
+
     let proc_path = PathBuf::from(format!("/proc/self/fd/{fd}"));
     let mut probe = [0u8; 2048];
     if fs::File::open(&proc_path)
@@ -157,25 +169,28 @@ fn resolve_uri(uri: *const std::ffi::c_char) -> Option<PathBuf> {
     }
 
     let mut source = unsafe { fs::File::from_raw_fd(fd) };
+    let total = source.metadata().map(|m| m.len()).unwrap_or(0);
     let _ = source.seek(SeekFrom::Start(0));
-    let target_dir = internal_root().join("disc");
-    let _ = fs::create_dir_all(&target_dir);
-    let target = target_dir.join("disc.iso");
+    let _ = fs::create_dir_all(copy_dir);
+    let target = copy_dir.join(DISC_COPY);
     crate::logcat::write(&format!("copying the disc into {}", target.display()));
     let result = (|| -> std::io::Result<u64> {
         let mut out = fs::File::create(&target)?;
         let mut buffer = vec![0u8; 4 << 20];
-        let mut total = 0u64;
+        let mut copied = 0u64;
         loop {
             let n = source.read(&mut buffer)?;
             if n == 0 {
                 break;
             }
             out.write_all(&buffer[..n])?;
-            total += n as u64;
+            copied += n as u64;
+            if !progress(copied, total) {
+                return Err(std::io::Error::other("cancelled"));
+            }
         }
         out.sync_all()?;
-        Ok(total)
+        Ok(copied)
     })();
     match result {
         Ok(bytes) => {
@@ -190,9 +205,11 @@ fn resolve_uri(uri: *const std::ffi::c_char) -> Option<PathBuf> {
     }
 }
 
+const DISC_COPY: &str = "disc.iso";
+
 /// The copy made by resolve_uri is only needed until the data is extracted.
 pub fn remove_disc_copy_when_extracted(data: &Path) {
-    let copy = internal_root().join("disc").join("disc.iso");
+    let copy = internal_root().join("disc").join(DISC_COPY);
     if copy.exists() && data.join("languages.json").exists() {
         let _ = fs::remove_file(&copy);
     }

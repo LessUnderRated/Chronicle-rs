@@ -213,10 +213,15 @@ if(WIN32)
     # The two aliases are /alternatename directives in port/src/linknames.cpp.
     set(DC_LINK_OPTIONS -fuse-ld=lld -Wl,--gc-sections -Wl,--error-limit=0)
 elseif(ANDROID)
-    # libmain.so: SDLActivity looks up SDL_main in it, which the Rust crate defines.
+    # libmain.so: SDLActivity looks up SDL_main in it, and SetupActivity the JNI methods, all of which
+    # the Rust crate defines and nothing else calls, so the linker would leave them in its archive.
     set(DC_LINK_OPTIONS -fuse-ld=lld -Wl,-z,separate-code -Wl,--gc-sections -Wl,--error-limit=0
         -Wl,--defsym=draw_rect=draw_rect_store -Wl,--defsym=WorkBuffer__2=WorkBuffer
-        -Wl,--undefined=SDL_main -Wl,-z,max-page-size=16384
+        -Wl,--undefined=SDL_main
+        -Wl,--undefined=Java_io_github_lessunderrated_chronicle_SetupActivity_nativeOpenDisc
+        -Wl,--undefined=Java_io_github_lessunderrated_chronicle_SetupActivity_nativeIdentify
+        -Wl,--undefined=Java_io_github_lessunderrated_chronicle_SetupActivity_nativeExtract
+        -Wl,-z,max-page-size=16384
         # The game's rand, srand and the like must win over bionic's, which load first.
         -Wl,-Bsymbolic)
 elseif(APPLE)
