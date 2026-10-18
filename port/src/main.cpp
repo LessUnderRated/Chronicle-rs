@@ -476,6 +476,13 @@ PORT_OVERRIDE int main(int argc, const char **argv, const char **envp) {
     return Run(argc, argv);
 }
 
+#ifdef __ANDROID__
+// The Rust crate in android/ defines SDL_main, which SDLActivity calls, and enters the game here.
+extern "C" int dc_main(int argc, const char **argv) {
+    return Run(argc, argv);
+}
+#endif
+
 extern "C" {
 void init_all__Fv() {
     init_all();

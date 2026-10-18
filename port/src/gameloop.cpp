@@ -48,6 +48,7 @@
 #include "title/opening.hpp"
 #include "title/rushmovi.hpp"
 #include "title/title.hpp"
+#include "touch_overlay.hpp"
 
 int  EditInit(void *param);
 int  EditLoop();
@@ -101,6 +102,7 @@ struct FpsOverlay {
     gfx::LogicalMapping mapping = {};
     gfx::DisplayListRef list;
     bool                font = false;
+    std::uint64_t       touch = 0;
 };
 
 FpsOverlay g_fps;
@@ -148,19 +150,41 @@ bool SameMapping(const gfx::LogicalMapping &a, const gfx::LogicalMapping &b) {
            a.offset_y == b.offset_y && a.pixel_width == b.pixel_width && a.pixel_height == b.pixel_height;
 }
 
-// Recorded again only when the text or the window's mapping changed. Always drawn in the overlay's
-// own 5x7 font, so the badge looks the same on every screen: the game's message font is only
-// loaded inside a mode, which made a second, different-looking badge for the intro and loading.
-const gfx::DisplayList *FpsOverlayList() {
-    if (!g_fps.on) {
+// The FPS badge and, on Android, the touch controls under it.
+gfx::DisplayListRef RecordOverlay(std::string_view text, bool touch) {
+    if (!touch) {
+        return OverlayRecord(text);
+    }
+    gfx::BeginRecording();
+    if (!gfx::Recording()) {
         return nullptr;
     }
-    std::string         text = GameFpsText();
+    const gfx::LogicalMapping ui = gfx::GetUiMapping(gfx::kMainTarget);
+    TouchOverlayDraw(ui);
+    if (!text.empty()) {
+        int pixel = OverlayPixelSize(gfx::GetLogicalMapping(gfx::kMainTarget));
+        OverlayDrawText(text, ui, pixel, pixel * kOverlayPadding, pixel * kOverlayPadding);
+    }
+    return gfx::EndRecording();
+}
+
+// Recorded again only when the text, the touch controls or the window's mapping changed. Always
+// drawn in the overlay's own 5x7 font, so the badge looks the same on every screen: the game's
+// message font is only loaded inside a mode, which made a second, different-looking badge for the
+// intro and loading.
+const gfx::DisplayList *FpsOverlayList() {
+    const std::uint64_t touch = TouchOverlayUpdate(gfx::GetUiMapping(gfx::kMainTarget));
+    if (!g_fps.on && touch == 0) {
+        return nullptr;
+    }
+    std::string         text = g_fps.on ? GameFpsText() : std::string();
     gfx::LogicalMapping mapping = gfx::GetLogicalMapping(gfx::kMainTarget);
     const bool          font = caption::Ready();
-    if (!g_fps.list || text != g_fps.text || !SameMapping(mapping, g_fps.mapping) || font != g_fps.font) {
+    if (!g_fps.list || text != g_fps.text || !SameMapping(mapping, g_fps.mapping) || font != g_fps.font ||
+        touch != g_fps.touch) {
         g_fps.font = font;
-        g_fps.list = OverlayRecord(text);
+        g_fps.touch = touch;
+        g_fps.list = RecordOverlay(text, touch != 0);
         g_fps.text = std::move(text);
         g_fps.mapping = mapping;
     }

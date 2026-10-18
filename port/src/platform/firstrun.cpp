@@ -181,6 +181,18 @@ void OnEvent(const SDL_Event &event) {
                 }
             }
             break;
+#ifdef __ANDROID__
+        // The touch screen is a gamepad on Android (android/src/touch.rs), which makes no mouse events.
+        case SDL_EVENT_FINGER_UP: {
+            int width = 0;
+            int height = 0;
+            SDL_GetWindowSize(WindowHandle(), &width, &height);
+            if (int at = ButtonAt(event.tfinger.x * width, event.tfinger.y * height); at >= 0) {
+                input.pressed = kButtons[at].action;
+            }
+            break;
+        }
+#endif
         default:
             break;
     }
@@ -197,7 +209,31 @@ struct Dialog {
     std::string             error;
 } dialog;
 
+#ifdef __ANDROID__
+// android/src/storage.rs: a path the disc reader can open for a content:// URI the file selector gave.
+// It may copy the whole disc, so it runs away from the activity's thread, which SDL calls back on.
+extern "C" bool chronicle_android_resolve_uri(const char *uri, char *out, std::size_t size);
+
+void ResolveUri(std::string uri) {
+    char            resolved[4096];
+    const bool      ok = chronicle_android_resolve_uri(uri.c_str(), resolved, sizeof resolved);
+    std::lock_guard lock(dialog.mutex);
+    dialog.answered = true;
+    if (ok) {
+        dialog.path = PathsFromUtf8(resolved);
+    } else {
+        dialog.error = "the chosen file could not be opened";
+    }
+}
+#endif
+
 void SDLCALL OnDialog(void *, const char *const *files, int) {
+#ifdef __ANDROID__
+    if (files != nullptr && files[0] != nullptr && std::string_view(files[0]).starts_with("content://")) {
+        std::thread(ResolveUri, std::string(files[0])).detach();
+        return;
+    }
+#endif
     std::lock_guard lock(dialog.mutex);
     dialog.answered = true;
     if (files == nullptr) {
@@ -208,7 +244,7 @@ void SDLCALL OnDialog(void *, const char *const *files, int) {
 }
 
 void OpenDialog(FirstRunSource source) {
-    static const SDL_DialogFileFilter kImages[] = {
+    [[maybe_unused]] static const SDL_DialogFileFilter kImages[] = {
         {"Disc images (.iso, .bin, .img)", "iso;ISO;bin;BIN;img;IMG"},
     };
     {
@@ -223,8 +259,11 @@ void OpenDialog(FirstRunSource source) {
     SDL_FileDialogType type;
     if (source == FirstRunSource::DiscImage) {
         type = SDL_FILEDIALOG_OPENFILE;
+#ifndef __ANDROID__
+        // Android filters by MIME type, and most providers call a disc image application/octet-stream.
         SDL_SetPointerProperty(props, SDL_PROP_FILE_DIALOG_FILTERS_POINTER, const_cast<SDL_DialogFileFilter *>(kImages));
         SDL_SetNumberProperty(props, SDL_PROP_FILE_DIALOG_NFILTERS_NUMBER, std::size(kImages));
+#endif
         SDL_SetStringProperty(props, SDL_PROP_FILE_DIALOG_TITLE_STRING,
                               "Choose your PAL disc image: the game data is extracted from it once");
     } else {

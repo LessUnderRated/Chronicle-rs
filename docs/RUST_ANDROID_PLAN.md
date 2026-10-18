@@ -14,6 +14,13 @@ git submodule update --init --checkout reference/doukutsu-rs
 
 Paths below such as `drsandroid/...` are relative to it.
 
+## Status
+
+`android/` and `docs/ANDROID.md` are phases 1–5 of section 7: the APK builds (Gradle → CMake → SDL3 +
+Corrosion, as drsandroid), with the game in C++ and the Android host in Rust (`SDL_main`, storage,
+disc picking, touch gamepad and its overlay). It has not yet been run on a device. Phase 6, moving the
+game itself into Rust, has not started.
+
 ## 1. How doukutsu-rs makes its APK
 
 Everything lives in `drsandroid/`:

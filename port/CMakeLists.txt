@@ -26,7 +26,13 @@ if(NOT EXISTS ${KZ_ROOT}/include/kazarov/port.h)
     message(FATAL_ERROR "${KZ_ROOT} is empty: run git submodule update --init tools/kazarov")
 endif()
 
+if(ANDROID)
+    include(${CMAKE_SOURCE_DIR}/android/kazarov.cmake)
+endif()
 include(${KZ_ROOT}/cmake/KazarovPort.cmake)
+if(ANDROID)
+    include(${CMAKE_SOURCE_DIR}/android/native.cmake)
+endif()
 
 # Python runs ${KZ_ROOT}/scripts/port_override.py.
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
@@ -113,6 +119,10 @@ target_compile_options(dc_options INTERFACE
 # arm64 clang fuses a*b+c into one rounding by default; x86-64 has no FMA in its
 # baseline. Off everywhere so the game's arithmetic rounds the same on both.
 target_compile_options(dc_options INTERFACE -ffp-contract=off)
+if(ANDROID)
+    # The NDK makes this warning an error; the game passes its message tables to printf as formats.
+    target_compile_options(dc_options INTERFACE -Wno-format-security)
+endif()
 
 if(WIN32 AND (NOT MINGW OR NOT CMAKE_CXX_COMPILER_ID STREQUAL "Clang"))
     message(FATAL_ERROR "The Windows build requires clang/llvm-mingw")
@@ -202,6 +212,13 @@ target_compile_options(dc_port PRIVATE -Wall -Wno-mismatched-tags -Wno-unused-la
 if(WIN32)
     # The two aliases are /alternatename directives in port/src/linknames.cpp.
     set(DC_LINK_OPTIONS -fuse-ld=lld -Wl,--gc-sections -Wl,--error-limit=0)
+elseif(ANDROID)
+    # libmain.so: SDLActivity looks up SDL_main in it, which the Rust crate defines.
+    set(DC_LINK_OPTIONS -fuse-ld=lld -Wl,-z,separate-code -Wl,--gc-sections -Wl,--error-limit=0
+        -Wl,--defsym=draw_rect=draw_rect_store -Wl,--defsym=WorkBuffer__2=WorkBuffer
+        -Wl,--undefined=SDL_main -Wl,-z,max-page-size=16384
+        # The game's rand, srand and the like must win over bionic's, which load first.
+        -Wl,-Bsymbolic)
 elseif(APPLE)
     set(DC_LINK_OPTIONS -Wl,-dead_strip -Wl,-alias,_draw_rect_store,_draw_rect
         -Wl,-alias,_WorkBuffer,_WorkBuffer__2)
@@ -219,9 +236,16 @@ function(dc_link_game target)
     target_link_options(${target} PRIVATE ${DC_LINK_OPTIONS})
 endfunction()
 
-add_executable(darkcloud ${PORT_DIR}/main.cpp)
-set_target_properties(darkcloud PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
-dc_link_game(darkcloud)
+if(ANDROID)
+    add_library(darkcloud SHARED ${PORT_DIR}/main.cpp)
+    set_target_properties(darkcloud PROPERTIES OUTPUT_NAME main)
+    dc_link_game(darkcloud)
+    target_link_libraries(darkcloud PRIVATE chronicle_android android log)
+else()
+    add_executable(darkcloud ${PORT_DIR}/main.cpp)
+    set_target_properties(darkcloud PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+    dc_link_game(darkcloud)
+endif()
 if(WIN32)
     target_link_options(darkcloud PRIVATE -municode)
     enable_language(RC)
@@ -258,4 +282,7 @@ if(DC_BUILD_TESTS)
     enable_testing()
     add_subdirectory(src/tests)
 endif()
-add_subdirectory(${CMAKE_SOURCE_DIR}/tools/dcdata ${CMAKE_BINARY_DIR}/tools/dcdata)
+# On Android the game's first-run screen extracts the disc; there is no shell to run dcdata from.
+if(NOT ANDROID)
+    add_subdirectory(${CMAKE_SOURCE_DIR}/tools/dcdata ${CMAKE_BINARY_DIR}/tools/dcdata)
+endif()

@@ -79,6 +79,15 @@ build.bat <configuration>
 | `windows-x64-release` | Windows x64   | Release                             |
 | `windows-x64`         | Windows x64   | Debug                               |
 
+### Android
+
+`android/` builds an APK for arm64 phones with Vulkan 1.3 (Android 13 or later). See
+[docs/ANDROID.md](docs/ANDROID.md).
+
+```bash
+cd android && ./gradlew assembleRelease
+```
+
 ### Build Options
 
 The following environment variables can be used to customise the build:

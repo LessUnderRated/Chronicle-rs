@@ -1,0 +1,4 @@
+ndk;30.0.16248370
+cmake;3.31.6
+build-tools;36.0.0
+platforms;android-36

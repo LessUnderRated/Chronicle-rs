@@ -20,7 +20,14 @@
 /**
  * The Metrowerks runtime's assertion failure.
  */
+#ifdef __ANDROID__
+// Bionic declares an __assert of its own with these parameters, and assert.h, which has no include
+// guard, declares it again with C linkage wherever it is included.
+#define __assert port_mwcc_assert
+extern "C" [[noreturn]] void __assert(const char *file, int line, const char *expression);
+#else
 [[noreturn]] void __assert(const char *file, int line, const char *expression);
+#endif
 
 /**
  * The Metrowerks runtime's exit.

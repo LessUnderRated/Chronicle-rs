@@ -1,0 +1,22 @@
+[package]
+name = "chronicle-android"
+description = "Chronicle's Android host: SDL_main, storage, assets and touch controls"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.87"
+publish = false
+
+[lib]
+crate-type = ["staticlib"]
+path = "src/lib.rs"
+
+[dependencies]
+jni = "0.21"
+libc = "0.2"
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+opt-level = 3
