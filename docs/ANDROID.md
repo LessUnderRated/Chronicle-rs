@@ -58,10 +58,12 @@ converted for Android. The game's own assets are read in their PS2 formats, as o
 
 ### Changes to the C++ for Android
 
-All under `#ifdef __ANDROID__` or `if(ANDROID)`; the PC builds are unchanged.
+All under `#ifdef __ANDROID__` or `if(ANDROID)`, but one: everything is compiled with `-fsigned-char`,
+which changes nothing on x86 or Apple arm64, where `char` is signed already.
 
 | Where | Why |
 |---|---|
+| `port/CMakeLists.txt`, `-fsigned-char` | The PS2's `char` is signed; arm64 Linux and Android make it unsigned, so the game's `s8` fields never read negative. `SndInitSeTable` then missed the `-128` ending each sound table, ran past them and wrote over `cap_se_info`'s pointers: the crash right after the first start. |
 | `port/CMakeLists.txt` | The game is `libmain.so` (`SHARED`), linked with `-Bsymbolic` (the game's `rand`, `srand` and the like must win over bionic's, loaded first) and 16 KiB page alignment. `-Wno-format-security`: the NDK makes it an error and the game passes its message tables to `printf`. `dcdata` is not built |
 | `port/include/port.h` | Bionic declares an `__assert` with the game's parameters; the game's is renamed |
 | `port/src/runtime.cpp` | Bionic does not declare `rand`/`srand` `noexcept` |

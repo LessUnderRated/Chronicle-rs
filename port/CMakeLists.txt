@@ -20,6 +20,9 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # darkcloud is position-independent (DC_LINK_OPTIONS below).
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+# The PS2's char is signed, as are x86's and Apple arm64's; Linux and Android on arm64 make it
+# unsigned, where the game's checks like `bank == -128` (the end of a sound table) never hold.
+add_compile_options(-fsigned-char)
 
 set(KZ_ROOT ${CMAKE_SOURCE_DIR}/tools/kazarov)
 if(NOT EXISTS ${KZ_ROOT}/include/kazarov/port.h)
