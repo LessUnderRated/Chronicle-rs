@@ -96,7 +96,8 @@ emulator's ABI.
 A release is signed with the key named by `CHRONICLE_KEYSTORE`, `CHRONICLE_KEYSTORE_PASSWORD`,
 `CHRONICLE_KEY_ALIAS` and `CHRONICLE_KEY_PASSWORD`, or with the debug key when they are unset, so a
 local build always installs. `.github/workflows/android.yml` builds it on every push with the
-`ANDROID_KEYSTORE*` secrets if they exist, and uploads the APK.
+`ANDROID_KEYSTORE*` secrets if they exist, and uploads the APK. A push whose `versionName` has no release yet
+also publishes the APK as the GitHub release `android-v<version>`.
 
 The native build can also be run without Gradle, which is quicker for working on the C++:
 

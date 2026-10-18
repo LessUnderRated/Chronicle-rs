@@ -5,13 +5,14 @@
 # The APK is signed by the key in the ANDROID_KEYSTORE secrets when they are set, and by the runner's
 # debug key otherwise, so every run's artifact installs.
 #
-# A tag android-v<version> (git tag android-v0.4.0 && git push origin android-v0.4.0) also publishes
-# the APK as that tag's GitHub release.
+# A push whose app version (versionName, android/app/build.gradle.kts) has no release yet publishes
+# the APK as the release android-v<version>, the tag made at the commit pushed; so does pushing that
+# tag by hand.
 name: Android
 
 on:
   push:
-    branches: [master]
+    branches: [master, 'ccr-*']
     tags: ['android-v*']
   pull_request:
   workflow_dispatch:
@@ -83,12 +84,21 @@ jobs:
           path: android/app/build/outputs/apk/release/app-release.apk
 
       - name: Publish the release
-        if: startsWith(github.ref, 'refs/tags/android-v')
+        if: github.event_name == 'push'
         env:
           GH_TOKEN: ${{ github.token }}
           SIGNED_BY: ${{ secrets.ANDROID_KEYSTORE != '' && 'the project''s release key' || 'this run''s debug key' }}
         run: |
-          version="${GITHUB_REF_NAME#android-v}"
+          version=$(sed -n 's/^ *versionName = "\(.*\)"$/\1/p' android/app/build.gradle.kts)
+          tag="android-v${version}"
+          if [[ "$GITHUB_REF" == refs/tags/* && "$GITHUB_REF_NAME" != "$tag" ]]; then
+            echo "tag $GITHUB_REF_NAME does not name versionName $version"
+            exit 1
+          fi
+          if gh release view "$tag" > /dev/null 2>&1; then
+            echo "$tag is already released"
+            exit 0
+          fi
           apk="Chronicle-${version}-arm64.apk"
           cp android/app/build/outputs/apk/release/app-release.apk "$apk"
           sha=$(sha256sum "$apk" | cut -d' ' -f1)
@@ -103,4 +113,4 @@ jobs:
 
           SHA-256: \`${sha}\`
           NOTES
-          gh release create "$GITHUB_REF_NAME" "$apk" --title "Chronicle ${version} (Android)" --notes-file notes.md
+          gh release create "$tag" "$apk" --target "$GITHUB_SHA" --title "Chronicle ${version} (Android)" --notes-file notes.md
