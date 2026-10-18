@@ -1,3 +1,6 @@
+#include <SDL3/SDL.h>
+
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -19,6 +22,7 @@
 #include "identity.hpp"
 #include "langset.hpp"
 #include "localize.hpp"
+#include "main.hpp"
 #include "menu_option.hpp"
 #include "menu_save.hpp"
 #include "mglib.hpp"
@@ -45,6 +49,9 @@ int  EditLoop();
 void SndInit();
 
 namespace fs = std::filesystem;
+
+// The game's current mode (main.hpp's GameMode), defined by ps2/src/main.cpp.
+extern s32 mode;
 
 namespace {
 
@@ -188,11 +195,22 @@ void RequireData() {
     }
 }
 
+// The modes video.title_aspect keeps in the 4:3 frame: the title and what plays before it.
+bool TitleMode() {
+    return mode == GAME_MODE_TITLE || mode == GAME_MODE_RUSH_MOVIE || mode == GAME_MODE_OPENING ||
+           mode == GAME_MODE_LANGUAGE;
+}
+
 // The Options screen keeps the interface at 100%, so a size that takes the HUD past the window
 // cannot take the screen's own controls with it.
 gfx::FrameLayout Layout(const Config &config) {
-    return {config.aspect == ConfigAspect::Auto ? gfx::AspectMode::Fill : gfx::AspectMode::Letterbox,
-            MenuOptionOpen() ? 1.0f : config.ui_scale};
+    bool             wide = config.aspect == ConfigAspect::Auto && !(config.title_letterbox && TitleMode());
+    gfx::FrameLayout layout = {wide ? gfx::AspectMode::Fill : gfx::AspectMode::Letterbox,
+                               MenuOptionOpen() ? 1.0f : config.ui_scale};
+#ifdef KZ_GFX_COVER_MODE
+    layout.cover = config.cover == ConfigCover::Fit ? gfx::CoverMode::Fit : gfx::CoverMode::Stretch;
+#endif
+    return layout;
 }
 
 // DC_BGM_TEST=<set>:<track>: a test aid. From frame 150 of the run (the title has started) the music
@@ -218,18 +236,66 @@ void BgmTestPump() {
     SndBgmPlay(track);
 }
 
+void RenderAudio(void *, float *out, int frames);
+
+#ifdef __ANDROID__
+// android/src: the touch gamepad coming and going, settings from the app's own menu, a pause while
+// that menu is open, and the speed toggle.
+extern "C" void     chronicle_android_pump();
+extern "C" bool     chronicle_android_paused();
+extern "C" unsigned chronicle_android_speed();
+extern "C" bool     chronicle_android_take_setting(char *name, std::size_t name_size, char *value, std::size_t value_size);
+
+void ApplyAndroidSettings() {
+    char name[64];
+    char value[256];
+    while (chronicle_android_take_setting(name, sizeof name, value, sizeof value)) {
+        if (!ConfigSetValue(name, value)) {
+            std::fprintf(stderr, "android: %s = %s was not applied\n", name, value);
+        }
+    }
+}
+
+void PumpAndroid() {
+    chronicle_android_pump();
+    ApplyAndroidSettings();
+    if (chronicle_android_paused()) {
+        // The game holds still under the menu: no ticks, no sound. The clock re-anchors after, so
+        // the time paused is not caught up.
+        AudioOutputStop();
+        while (chronicle_android_paused()) {
+            SDL_Delay(20);
+            ApplyAndroidSettings();
+        }
+        AudioOutputStart(audio::DefaultMixer().Rate(), RenderAudio, nullptr);
+        ClockSetTickRate(ClockTickRate());
+    }
+    double rate = ConfigGet().tick_rate * chronicle_android_speed();
+    if (ClockTickRate() != rate) {
+        ClockSetTickRate(rate);
+    }
+}
+#endif
+
 void PumpHost() {
+#ifdef __ANDROID__
+    PumpAndroid();
+#endif
     BgmTestPump();
     if (!WindowPollEvents()) {
         GameRequestStop();
     }
     DisplayPump();
-    // A change of video.aspect or video.ui_scale, or the Options screen opening or closing, waits
+    // A change of video.aspect, video.cover or video.ui_scale, or the Options screen opening or closing, waits
     // for a pump outside a frame.
     if (!gfx::InFrame()) {
         gfx::FrameLayout layout = Layout(ConfigGet());
         gfx::FrameLayout current = gfx::CurrentFrameLayout();
-        if (layout.aspect != current.aspect || layout.ui_scale != current.ui_scale) {
+        bool changed = layout.aspect != current.aspect || layout.ui_scale != current.ui_scale;
+#ifdef KZ_GFX_COVER_MODE
+        changed |= layout.cover != current.cover;
+#endif
+        if (changed) {
             gfx::SetFrameLayout(layout);
         }
     }

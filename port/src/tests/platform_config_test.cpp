@@ -101,6 +101,37 @@ TEST(PlatformConfig, ParsesJson) {
     ASSERT_TRUE(ConfigParse(R"({"video": {"present_mode": "Mailbox"}})").present_mode == ConfigPresentMode::Mailbox);
 }
 
+TEST(PlatformConfig, CoverAndTitleAspect) {
+    Config config = ConfigParse("");
+    ASSERT_TRUE(config.cover == ConfigCover::Stretch && !config.title_letterbox);
+    config = ConfigParse(R"({"video": {"cover": "fit", "title_aspect": "4:3"}})");
+    ASSERT_TRUE(config.cover == ConfigCover::Fit && config.title_letterbox);
+    Config again = ConfigParse(ConfigSerialize(config));
+    ASSERT_TRUE(again.cover == ConfigCover::Fit && again.title_letterbox);
+    config = ConfigParse(R"({"video": {"cover": "squash", "title_aspect": 3}})");
+    ASSERT_TRUE(config.cover == ConfigCover::Stretch && !config.title_letterbox);
+}
+
+TEST(PlatformConfig, SetsOneValueByName) {
+    std::filesystem::path root =
+        std::filesystem::temp_directory_path() / ("dc_config_set_" + std::to_string(dc::test::ProcessId()));
+    std::filesystem::create_directories(root);
+    PathsSetSaveRoot(root);
+    ConfigLoad();
+    ASSERT_TRUE(ConfigSetValue("video.cover", R"("fit")"));
+    ASSERT_TRUE(ConfigGet().cover == ConfigCover::Fit);
+    ASSERT_TRUE(ConfigSetValue("video.ui_scale", "1.5"));
+    ASSERT_TRUE(ConfigGet().ui_scale == 1.5f);
+    ASSERT_FALSE(ConfigSetValue("video.cover", R"("squash")"));
+    ASSERT_FALSE(ConfigSetValue("video.no_such_setting", "1"));
+    ASSERT_FALSE(ConfigSetValue("video.cover", "not json"));
+    ASSERT_TRUE(ConfigGet().cover == ConfigCover::Fit);
+    ASSERT_TRUE(ConfigLoad());
+    ASSERT_TRUE(ConfigGet().cover == ConfigCover::Fit && ConfigGet().ui_scale == 1.5f);
+    ASSERT_TRUE(ConfigSetValue("video.cover", R"("stretch")") && ConfigSetValue("video.ui_scale", "1.0"));
+    std::filesystem::remove_all(root);
+}
+
 TEST(PlatformConfig, InvalidJsonKeepsTheDefaults) {
     ASSERT_TRUE(ConfigParse("[game]\ntick_rate = 50\n").tick_rate == 60.0);
     ASSERT_TRUE(ConfigParse(R"({"game": {"tick_rate": 50})").tick_rate == 60.0);

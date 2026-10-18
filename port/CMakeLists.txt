@@ -26,7 +26,10 @@ if(NOT EXISTS ${KZ_ROOT}/include/kazarov/port.h)
     message(FATAL_ERROR "${KZ_ROOT} is empty: run git submodule update --init tools/kazarov")
 endif()
 
-if(ANDROID)
+# android/patches: what the Android build needs of Kazarov before Kazarov has it. DC_KAZAROV_PATCHES
+# builds a PC port with them too, to run Kazarov's tests against them.
+option(DC_KAZAROV_PATCHES "Build Kazarov with android/patches applied" OFF)
+if(ANDROID OR DC_KAZAROV_PATCHES)
     include(${CMAKE_SOURCE_DIR}/android/kazarov.cmake)
 endif()
 include(${KZ_ROOT}/cmake/KazarovPort.cmake)
@@ -221,6 +224,7 @@ elseif(ANDROID)
         -Wl,--undefined=Java_io_github_lessunderrated_chronicle_SetupActivity_nativeOpenDisc
         -Wl,--undefined=Java_io_github_lessunderrated_chronicle_SetupActivity_nativeIdentify
         -Wl,--undefined=Java_io_github_lessunderrated_chronicle_SetupActivity_nativeExtract
+        -Wl,--undefined=JNI_OnLoad
         -Wl,-z,max-page-size=16384
         # The game's rand, srand and the like must win over bionic's, which load first.
         -Wl,-Bsymbolic)

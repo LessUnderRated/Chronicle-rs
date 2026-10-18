@@ -27,4 +27,39 @@
     <string name="setup_starting">Starting…</string>
     <string name="setup_extracting">%1$d of %2$d files, %3$s of %4$s MB</string>
     <string name="setup_failed">Extraction failed</string>
+    <string name="menu_resume">Resume</string>
+    <string name="menu_speed_normal">Speed: 1× (tap for 2×)</string>
+    <string name="menu_speed_fast">Speed: 2× (tap for 1×)</string>
+    <string name="menu_settings">Graphics &amp; video settings</string>
+    <string name="menu_edit_controls">Edit touch controls</string>
+    <string name="menu_hide_controls">Hide touch controls</string>
+    <string name="menu_show_controls">Show touch controls</string>
+    <string name="menu_import_card">Import saves from a PS2 memory card</string>
+    <string name="menu_quit">Quit</string>
+    <string name="menu_back">Back</string>
+
+    <string name="setting_aspect">Aspect ratio</string>
+    <string name="setting_title_aspect">Title &amp; opening</string>
+    <string name="setting_cover">Full-screen pictures</string>
+    <string name="setting_ui_scale">Interface size</string>
+    <string name="setting_max_fps">Frame limit</string>
+    <string name="setting_present">V-Sync</string>
+    <string name="setting_interpolation">Smooth motion</string>
+    <string name="setting_anisotropy">Anisotropic filter</string>
+    <string name="setting_soft_focus">Soft focus</string>
+    <string name="setting_text_font">Text font</string>
+    <string name="setting_show_fps">FPS counter</string>
+    <string name="setting_volume">Volume</string>
+    <string name="setting_controls_opacity">Touch controls opacity</string>
+
+    <string name="edit_hint">Touch a control to pick it up, then drag it. Its size and opacity are below.</string>
+    <string name="edit_selected">%1$s: drag to move</string>
+    <string name="edit_size">Size</string>
+    <string name="edit_opacity">Opacity</string>
+    <string name="edit_reset">Reset all</string>
+    <string name="edit_done">Done</string>
+
+    <string name="import_slot">imported as save %1$d</string>
+    <string name="import_converted">It was made by another release of the game (%1$s): it is given this one\'s version and should load, but that is untried.</string>
+    <string name="import_where">The saves are on the game\'s load screen.</string>
 </resources>

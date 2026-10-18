@@ -2,7 +2,7 @@
 # port before Kazarov carries it. The patched copy lives in the build tree, so the submodule stays
 # clean. Sets KZ_ROOT to the copy.
 
-file(GLOB kz_patches ${CMAKE_SOURCE_DIR}/android/patches/kazarov-*.patch)
+file(GLOB kz_patches CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/android/patches/kazarov-*.patch)
 list(SORT kz_patches)
 set(kz_copy ${CMAKE_BINARY_DIR}/kazarov)
 set(kz_stamp_text "")
@@ -22,9 +22,18 @@ endif()
 if(NOT kz_stamp_old STREQUAL kz_stamp_text)
     file(REMOVE_RECURSE ${kz_copy})
     file(COPY ${KZ_ROOT}/ DESTINATION ${kz_copy} PATTERN .git EXCLUDE)
+    # Its own repository: inside another's work tree (the Gradle build's is in the checkout) git apply
+    # takes a patch's paths from that one's root and skips them, reporting success.
+    execute_process(COMMAND git init -q WORKING_DIRECTORY ${kz_copy} RESULT_VARIABLE initialised)
+    if(NOT initialised EQUAL 0)
+        message(FATAL_ERROR "git init in ${kz_copy} failed")
+    endif()
     foreach(patch IN LISTS kz_patches)
-        execute_process(COMMAND git apply --whitespace=nowarn ${patch}
-            WORKING_DIRECTORY ${kz_copy} RESULT_VARIABLE applied)
+        execute_process(COMMAND git apply --verbose --whitespace=nowarn ${patch}
+            WORKING_DIRECTORY ${kz_copy} RESULT_VARIABLE applied OUTPUT_QUIET ERROR_VARIABLE applied_files)
+        if(applied EQUAL 0 AND NOT applied_files MATCHES "Applied patch")
+            set(applied 1)
+        endif()
         if(NOT applied EQUAL 0)
             message(FATAL_ERROR "${patch} does not apply to tools/kazarov at ${kz_head}")
         endif()

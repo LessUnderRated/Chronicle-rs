@@ -5,11 +5,16 @@
 //! - logcat: the game's stdout and stderr, which Android otherwise discards
 //! - storage: data/ and save/ in the app's internal storage, the port's own files from the APK, and
 //!   the disc image the first-run screen's file selector picks
-//! - touch: the touch screen as a gamepad, and the overlay that draws it
+//! - touch: the touch screen as a gamepad, under the overlay the activity draws (jni.rs)
+//! - host: the app menu's pause, speed and settings, which the game takes between ticks
+//! - memcard: the game's saves read out of a PS2 memory card image
 //! - setup: the setup screen's native half, which identifies and extracts the player's disc before
 //!   the game starts
 
+mod host;
+mod jni;
 mod logcat;
+mod memcard;
 mod sdl;
 mod setup;
 mod storage;
@@ -17,8 +22,11 @@ mod storage;
 mod test_stubs;
 mod touch;
 
+pub use host::{
+    chronicle_android_paused, chronicle_android_pump, chronicle_android_speed,
+    chronicle_android_take_setting,
+};
 pub use storage::chronicle_android_resolve_uri;
-pub use touch::{chronicle_touch_generation, chronicle_touch_geometry};
 
 use std::ffi::{c_char, CString};
 

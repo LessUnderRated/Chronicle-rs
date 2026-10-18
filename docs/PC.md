@@ -148,6 +148,8 @@ key is optional; these are the defaults:
         "height": 0,                //   monitor, so "aspect": "auto" takes the monitor's shape; headless: 1280x960
         "fullscreen": false,        // fullscreen at a given width and height
         "aspect": "auto",           // auto: the world fills the window, the HUD in its corners, other 2D in the centred 4:3 frame; 4:3: letterboxed
+        "cover": "stretch",         // auto aspect, 4:3 pictures over the whole frame (cutscene stills): stretch to the window or fit (4:3, black bars; Android's default). Needs Kazarov with android/patches
+        "title_aspect": "wide",     // the title, attract movie and opening: wide (as the game) or 4:3 (letterboxed; Android's default)
         "ui_scale": 1.0,            // 0.25 to 4: the HUD and menus scaled about the window's centre (not the Options screen)
         "show_fps": true,           // the FPS counter at the window's top-left corner (headless: --show-fps)
         "fps_detail": "all",        // what it shows: fps (the frame rate alone), ticks (and the logic ticks) or all (and the draws)
@@ -945,8 +947,11 @@ shape. With `video.aspect` `auto` the rest of the window is not bars:
   `tools/kazarov/port/gfx/README.md`, "Aspect"): the dungeon's status panel (life, weapon
   and water to the top left, the quick items top centre, the floor plate and the
   mini map to the top right, the weapon's portrait and gauge to the bottom left;
-  `DrawGame`, `port/src/dun/gameloop.cpp`) and the town's clock (top right;
-  `EdDrawClock`, `port/src/editloop.cpp`). Menus, message windows, the Georama
+  `DrawGame`, `port/src/dun/gameloop.cpp`), the dungeon's hint window (bottom
+  right, where the game places it) and the town's clock (top right;
+  `EdDrawClock`, `port/src/editloop.cpp`). With Kazarov's `android/patches` they
+  keep to the window's safe area (`SDL_GetWindowSafeArea`), clear of a phone's
+  camera cutout and gesture edges. Menus, message windows, the Georama
   editor's panels and 2D placed from 3D projections stay in the frame.
 - **Frame grabs** (`frame_image`, `frame_buff` and the other `frame_*`
   placeholders, and the water's `water` and `water_buff`; `MGPortFrameTarget`)

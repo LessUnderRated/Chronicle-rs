@@ -34,8 +34,16 @@ converted for Android. The game's own assets are read in their PS2 formats, as o
   file dialog returns into a path the disc reader opens: `/proc/self/fd/N` for the descriptor SDL
   opened, or, when the provider refuses that, a copy in `disc/disc.iso` made from the descriptor
   (removed at the next start once the data is extracted).
-- `touch.rs`: the touch screen as an SDL virtual gamepad, and the triangles of its overlay. The game
-  sees a controller: button prompts, the camera and the menus work as with a pad.
+- `touch.rs`: the touch screen as an SDL virtual gamepad. The game sees a controller: button prompts,
+  the camera and the menus work as with a pad. This is the model: the default layout clear of the HUD,
+  the player's arrangement laid over it (as JSON), and what the fingers on it press. The view is
+  `TouchOverlay.java`, which draws it and hands over every touch.
+- `host.rs`: what the app's menu asks of the game, which `PumpAndroid` (`port/src/main.cpp`) takes
+  between ticks on the game's thread: a pause while the menu is open (sound stopped, the clock
+  re-anchored after so nothing is caught up), the speed (1x or 2x the tick rate), and settings changed
+  there (`ConfigSetValue`, the same path as the Options screen, so `config.json` follows).
+- `memcard.rs`: the game's saves read out of a PS2 memory card (below).
+- `jni.rs`: the methods of `Native.java`, registered in `JNI_OnLoad`.
 - `setup.rs`: the JNI methods of the setup screen, `SetupActivity` (below): a readable path for the
   picked file's descriptor, what the disc is, and its extraction with progress, through
   `port/src/platform/android_setup.cpp`, which calls dcdata and the first-run screen's
@@ -57,8 +65,11 @@ All under `#ifdef __ANDROID__` or `if(ANDROID)`; the PC builds are unchanged.
 | `port/src/main.cpp` | `dc_main`, which `SDL_main` calls |
 | `port/src/platform/firstrun.cpp` | Taps press the first-run buttons (touch makes no mouse events), the disc dialog has no filter (Android filters by MIME type, and disc images are `application/octet-stream`), and a `content://` answer is resolved by the crate off the activity's thread |
 | `port/src/platform/android_setup.cpp` | The setup screen's disc identification and extraction, as C functions for `setup.rs` |
-| `port/src/touch_overlay.cpp`, `port/src/gameloop.cpp` | The touch controls are recorded into the overlay list the FPS badge uses, so they are drawn over every presented frame |
+| `port/src/main.cpp` (`PumpAndroid`) | The app menu's pause, speed and settings, between ticks |
+| `port/src/platform/config.cpp` | `ConfigSetValue`, one setting by name; `video.cover` and `video.title_aspect` (both on every platform; Android's defaults are `fit` and `4:3`) |
+| `port/src/fireomni.cpp` | The torches' heat shimmer (`CFireOmni::DrawRaster`) is left out for a torch wholly past the 4:3 frame's sides, where it would copy from outside the 640-wide `blender` target; on every platform |
 | `android/patches/kazarov-0001-android-surface.patch` | Android takes the window's surface away when the app leaves the screen; the renderer makes a new `VkSurfaceKHR` when it returns or when Vulkan reports the old one lost. The swapchain uses the identity transform, so the compositor turns the landscape image onto the phone's portrait panel (the renderer does not pre-rotate), and Android's resulting `VK_SUBOPTIMAL_KHR` on every frame is not taken for a resize |
+| `android/patches/kazarov-0002-safe-area-and-cover-fit.patch` | The HUD anchors to the window's safe area, and `FrameLayout::cover` with `CoverMode::Fit` keeps full-frame pictures 4:3 with black bars (`KZ_GFX_COVER_MODE` tells the game the Kazarov it builds with has it) |
 
 Kazarov is a submodule of another repository, so its Android changes are patches here:
 `android/kazarov.cmake` copies `tools/kazarov` into the build tree, applies `android/patches/kazarov-*.patch`
@@ -130,19 +141,98 @@ deleted afterwards. Your files are in the Files app under **Chronicle** (`data/`
 can be copied out and back. Deleting `data/` brings the setup screen back on the next start; the game's
 own first-run screen (`port/src/platform/firstrun.cpp`) remains for data that goes missing while it runs.
 
+## The screen's shape
+
+The game takes the whole panel: the window is fullscreen (immersive, `Config`'s Android default) and SDL
+lays it under the camera's cutout. With `video.aspect` `auto` (the default) the 3D fills it at the
+phone's own shape, 19.5:9 on the S26, at retail's vertical field of view, so the sides show more of the
+world; nothing of the game is stretched:
+
+- **2D** (menus, message windows, the Georama editor) keeps its 4:3 proportions in the centre.
+- **The HUD moves to the edges** where it belongs (`docs/PC.md`, "Window aspect"): the dungeon's life,
+  weapon and water to the top left, its floor plate and mini map to the top right, the weapon's
+  gauge to the bottom left, its hint window to the bottom right, and the town's clock to the top
+  right. They stop at the window's safe area (`SDL_GetWindowSafeArea`: the cutout and the gesture
+  edges), not at the glass's edge.
+- **Full-screen pictures** (cutscene stills) are kept at 4:3 with black bars, `video.cover` `fit`, which
+  is Android's default; the menu's *Full-screen pictures* setting stretches them instead.
+- **The title, the attract movie and the opening** are framed for 4:3 and show far past it on a phone, so
+  they play letterboxed (`video.title_aspect` `4:3`, Android's default; the menu's *Title & opening*).
+  The game itself fills the screen again from the language select on.
+- **Torches' heat shimmer** past the frame's sides is left out rather than drawn from outside its
+  buffer (the fire itself still burns there).
+
+Both come from `android/patches/kazarov-0002-safe-area-and-cover-fit.patch`. The touch controls make room
+for the HUD (`android/src/touch.rs`, `Hud`): the shoulders sit on the side edges under its top band,
+SELECT and START in the gaps beside the quick items, and the left stick rests above the gauge.
+
 ## Touch controls
 
-| Where | What |
+The controls are an Android view over the game (`TouchOverlay.java`); what they press goes to an SDL
+virtual gamepad (`touch.rs`), so the game sees a controller.
+
+| Where (by default) | What |
 |---|---|
 | Left half, anywhere free | Left stick: it appears under the thumb and follows it past its edge |
 | Right half, anywhere free | Right stick (the camera) |
 | ✕ ○ □ △, bottom right | Face buttons |
-| L1 L2, R1 R2, top corners | Shoulders and triggers |
-| SELECT, START, top middle | Select and Start; the phone's Back is Start too |
-| D-pad, left middle | Eight directions |
+| L2 L1, R2 R1, the side edges under the HUD | Triggers and shoulders |
+| SELECT, START, either side of the quick items at the top (bottom centre on a narrower screen) | Select and Start |
+| D-pad, left, under L1 | Eight directions |
+| **2×**, top left (small) | Speed: the game runs at twice its tick rate while it is lit |
+| **☰**, top right (small) | The menu; the phone's Back opens it too |
 
-The overlay goes away while a controller is connected (Bluetooth or USB) and comes back when it is
-disconnected. Touch makes no mouse events, so the menus' mouse pointer stays still.
+**Editing** (menu, *Edit touch controls*): the game holds still, touch any control (the 2× and ☰
+buttons too) and drag it where you want it; the panel's sliders set the picked control's size (25% to
+250% of the default) and opacity, *Reset all* goes back to the default layout and *Done* saves. The
+arrangement is kept per app (SharedPreferences) and scales with the window, so it survives rotation and
+a different screen. *Touch controls opacity* in the settings sets all of them at once, and *Hide touch
+controls* leaves only 2× and ☰.
+
+The pad goes away while a controller is connected (Bluetooth or USB) and comes back when it is
+disconnected; 2× and ☰ stay. No ready-made library fitted: RadialGamePad (Lemuroid's) is GPL-3.0 and lays
+out radial dials in code, and its successor PadKit is Compose Multiplatform without a runtime editor, so
+the view and its editor are written here.
+
+## The menu
+
+☰ or Back pauses the game and opens:
+
+- **Speed** 1× / 2×.
+- **Graphics & video settings**: aspect ratio, title & opening, full-screen pictures, interface size,
+  frame limit, V-Sync, smooth motion, anisotropic filter, soft focus, text font, FPS counter, volume,
+  and the touch controls' opacity. They are the game's own settings (`config.json`), applied at once;
+  the rest (audio mode, controls, text, language) are in the game's Options screen, from the town and
+  dungeon menus.
+- **Edit / hide touch controls** (above).
+- **Import saves from a PS2 memory card** (below).
+- **Quit**.
+
+## Saves from a PS2 memory card
+
+*Import saves from a PS2 memory card* takes a card image from the file picker and brings every Dark
+Cloud save on it into the game's load screen (`memcard.rs`):
+
+- **Read:** a raw card image (`.ps2`, `.mcd`, `.bin`), as PCSX2, AetherSX2 and NetherSX2 keep their
+  cards and as mcpd dumps a real one, with or without the 16 bytes of ECC after each page; and a
+  uLaunchELF save export (`.psu`). Action Replay MAX exports (`.max`) are compressed and not read yet.
+- **Found:** each `darkcloudN` in a folder the game made (`BESCES-50295dkcloud`, `BASCUS-97111dkcloud`,
+  `BISCPS-15004dkcloud`), checked against its checksums.
+- **Put:** each in the lowest numbered save folder free, `saves/<N>/save.dat`, the same bytes the port
+  writes (`docs/PC.md`, "Saves and host files"). Nothing is written over, and a save already there
+  byte for byte is left out, so importing the same card twice adds nothing.
+- **Other releases:** the port's game is PAL's and reads saves marked `darkcloudVer1.9`. A save marked
+  otherwise (an NTSC or Japanese card) is given that mark, which its checksums do not cover, so it
+  loads; that its contents mean the same to PAL's code is untested, and the dialog says so.
+
+## Save states
+
+Not yet. A save state has to hold everything the running game holds: its arenas, and the port's own
+state beside them (the textures and meshes on the GPU, the sound banks, the caches in the host's heap),
+which the game's memory points into. Restoring the game's memory alone would leave those pointers
+naming objects that no longer exist. The way there is to make the port's host state rebuildable from
+the game's memory (textures re-uploaded, banks reloaded) and then snapshot the arenas and the game's
+globals; until then the game saves where it always has, with the autosave on arriving in a town.
 
 ## Where it stands
 
@@ -159,3 +249,4 @@ adb logcat -s Chronicle SDL
 - Leaving and returning to the app, and the image's orientation (the surface patch).
 - Whether the picked disc is read through `/proc/self/fd` or copied (logcat says which).
 - A Japanese disc: whether the game gets past the title with its data.
+- An imported NTSC or Japanese save: whether it loads and plays on as it did.
