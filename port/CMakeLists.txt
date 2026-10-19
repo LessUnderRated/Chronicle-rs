@@ -128,6 +128,10 @@ target_compile_options(dc_options INTERFACE -ffp-contract=off)
 if(ANDROID)
     # The NDK makes this warning an error; the game passes its message tables to printf as formats.
     target_compile_options(dc_options INTERFACE -Wno-format-security)
+    # The NDK builds with _FORTIFY_SOURCE=2, whose checked copies stop the process on the game's own
+    # small overruns, harmless where it was written for: MakeMcIconSysInfo's strcpy of "PS2D" into a
+    # 4-byte field, the zero landing in the reserved field after it. The PC builds have no FORTIFY.
+    target_compile_options(dc_options INTERFACE -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0)
 endif()
 
 if(WIN32 AND (NOT MINGW OR NOT CMAKE_CXX_COMPILER_ID STREQUAL "Clang"))

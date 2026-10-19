@@ -63,6 +63,7 @@ which changes nothing on x86 or Apple arm64, where `char` is signed already.
 
 | Where | Why |
 |---|---|
+| `port/CMakeLists.txt`, `-D_FORTIFY_SOURCE=0` | The NDK fortifies `memcpy` and `strcpy` by default, and stops the process on the game's own harmless overruns, which the PS2 and the PC builds let pass: `MakeMcIconSysInfo` copies `"PS2D"` and its terminating zero into a 4-byte field, which crashed opening the load screen. |
 | `port/CMakeLists.txt`, `-fsigned-char` | The PS2's `char` is signed; arm64 Linux and Android make it unsigned, so the game's `s8` fields never read negative. `SndInitSeTable` then missed the `-128` ending each sound table, ran past them and wrote over `cap_se_info`'s pointers: the crash right after the first start. |
 | `port/CMakeLists.txt` | The game is `libmain.so` (`SHARED`), linked with `-Bsymbolic` (the game's `rand`, `srand` and the like must win over bionic's, loaded first) and 16 KiB page alignment. `-Wno-format-security`: the NDK makes it an error and the game passes its message tables to `printf`. `dcdata` is not built |
 | `port/include/port.h` | Bionic declares an `__assert` with the game's parameters; the game's is renamed |
