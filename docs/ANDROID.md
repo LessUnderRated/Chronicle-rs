@@ -104,11 +104,11 @@ A release is signed with the key named by `CHRONICLE_KEYSTORE`, `CHRONICLE_KEYST
 and alias `chronicle`) when they are unset. That key is public, so it says nothing about who built an
 APK; it is there so that every build installs over the last and keeps the extracted disc and the
 saves. Releases before 0.5.0 were signed with a throwaway key: going from one of those takes an
-uninstall. `.github/workflows/android.yml` builds it on every push with the
-`ANDROID_KEYSTORE*` secrets if they exist, and uploads the APK. A push whose `versionName` has no release yet
-also publishes the APK as the GitHub release `android-v<version>`. `android/publish.sh` publishes
-the one built locally the same way (with `GH_TOKEN`), after the commit is pushed; whichever comes
-first makes the release and the other leaves it.
+uninstall. GitHub Actions does not build or publish the APK. After bumping `versionCode` and
+`versionName` in `android/app/build.gradle.kts`, commit, push the branch, then run `android/publish.sh`
+(needs `gh` with Contents write). That creates the GitHub release `android-v<version>` at the pushed
+commit with the APK and the unstripped `libmain-<version>-arm64-symbols.so`. A version that already
+has a release is left alone.
 
 The native build can also be run without Gradle, which is quicker for working on the C++:
 
@@ -262,17 +262,16 @@ globals; until then the game saves where it always has, with the autosave on arr
 
 ## Where it stands
 
-The APK builds and its native libraries link for arm64 with the NDK; it has not yet been run on a
-device. What to look at on the first run (or in a shared log):
+Running on a Galaxy S26-class SM-S942U (Snapdragon SM8850 / Adreno 840, Android 17). The player
+cannot use adb: crashes come back through the in-app dialog or ☰ → Share log (`save/logs/`).
+Symbolize with `llvm-symbolizer --obj=libmain-<version>-arm64-symbols.so <offset>`.
 
-```sh
-adb logcat -s Chronicle SDL
-```
+Already working: signed `char` (`-fsigned-char`), swapchain from the window (and rebuilt on size
+change), landscape only, the game filling the wide panel including the title, one touch-control
+opacity, a slim edit strip that hides while dragging, PS2 memory card import (folder entry counts
+from the parent dir entry). Game code is built with `-D_FORTIFY_SOURCE=0` so the NDK's FORTIFY does
+not kill retail's `strcpy("PS2D")` in `CMemoryCardAccess::MakeMcIconSysInfo`.
 
-- The renderer's device report: `RendererInit` names the GPU it chose and, for one it passed over,
-  what it lacks. The S26's Adreno 840 and Xclipse 960 are both expected to have everything.
-- Frame pacing and the S26's refresh rate (the game ticks at 60 Hz and interpolates between ticks).
-- Leaving and returning to the app, and the image's orientation (the surface patch).
-- Whether the picked disc is read through `/proc/self/fd` or copied (logcat says which).
-- A Japanese disc: whether the game gets past the title with its data.
-- An imported NTSC or Japanese save: whether it loads and plays on as it did.
+Open: save states (host GPU/sound state has to be rebuildable first), `.max` card import, stock
+Adreno 730 (Vulkan 1.1, no dynamic rendering; Turnip via libadrenotools is the plan), Japanese disc,
+and whether an imported US save (`BASCUS-97111dkcloud`) loads on PAL's code.

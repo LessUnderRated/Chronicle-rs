@@ -1,122 +1,14 @@
-# The Android APK (docs/ANDROID.md): the game built for arm64-v8a by the NDK through Gradle, the Rust
-# host crate in android/ linked in, and SDL3's Java activity, as doukutsu-rs builds its APK
-# (reference/doukutsu-rs, .github/workflows/ci.yml, build_android). No game data is needed or shipped.
-#
-# The APK is signed by the key in the ANDROID_KEYSTORE secrets when they are set, and otherwise by
-# android/app/chronicle-dev.jks, so each build installs over the last.
-#
-# A push whose app version (versionName, android/app/build.gradle.kts) has no release yet publishes
-# the APK as the release android-v<version>, the tag made at the commit pushed; so does pushing that
-# tag by hand.
+# Disabled: APKs are built locally (`cd android && ./gradlew assembleRelease`) and published with
+# android/publish.sh. GitHub Actions is not used for Android any more. See docs/ANDROID.md.
 name: Android
 
 on:
-  push:
-    branches: [master, 'ccr-*']
-    tags: ['android-v*']
-  pull_request:
   workflow_dispatch:
 
-permissions:
-  contents: read
-
 jobs:
-  apk:
-    name: APK (arm64-v8a)
-    runs-on: ubuntu-26.04
-    permissions:
-      # The release a tag publishes.
-      contents: write
+  disabled:
+    name: disabled (local publish.sh instead)
+    if: false
+    runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-        with:
-          # tools/kazarov; reference/doukutsu-rs is update = none and stays out.
-          submodules: true
-
-      - uses: actions/setup-java@v5
-        with:
-          distribution: temurin
-          java-version: 21
-
-      - name: Install the toolchains
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y glslang-tools ninja-build
-          rustup default stable
-          rustup target add aarch64-linux-android
-          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null
-          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install --package_file=android/app/packages.txt
-
-      - name: Check the Rust crate
-        working-directory: android
-        run: |
-          cargo fmt --check
-          cargo test
-          cargo clippy --target aarch64-linux-android -- -D warnings
-
-      - name: Restore the keystore
-        env:
-          KEYSTORE: ${{ secrets.ANDROID_KEYSTORE }}
-        if: ${{ env.KEYSTORE != '' }}
-        run: |
-          echo "$KEYSTORE" | base64 --decode > "$RUNNER_TEMP/chronicle.jks"
-          echo "CHRONICLE_KEYSTORE=$RUNNER_TEMP/chronicle.jks" >> "$GITHUB_ENV"
-
-      - name: Build
-        working-directory: android
-        env:
-          CHRONICLE_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          CHRONICLE_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-          CHRONICLE_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-        run: ./gradlew --no-daemon assembleRelease
-
-      - name: Check the APK
-        run: |
-          apk=android/app/build/outputs/apk/release/app-release.apk
-          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --print-certs "$apk"
-          # Android 15 and later want every native library aligned for 16 KiB pages.
-          "$ANDROID_HOME/build-tools/36.0.0/zipalign" -c -P 16 -v 4 "$apk" | tail -n 3
-          unzip -l "$apk" | grep -E 'lib/arm64-v8a/lib(main|SDL3|c\+\+_shared)\.so|assets/chronicle-assets\.txt'
-
-      - uses: actions/upload-artifact@v7
-        with:
-          name: chronicle-android
-          path: android/app/build/outputs/apk/release/app-release.apk
-
-      - name: Publish the release
-        if: github.event_name == 'push'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          SIGNED_BY: ${{ secrets.ANDROID_KEYSTORE != '' && 'the project''s release key' || 'the development key in the repository (android/app/chronicle-dev.jks)' }}
-        run: |
-          version=$(sed -n 's/^ *versionName = "\(.*\)"$/\1/p' android/app/build.gradle.kts)
-          tag="android-v${version}"
-          if [[ "$GITHUB_REF" == refs/tags/* && "$GITHUB_REF_NAME" != "$tag" ]]; then
-            echo "tag $GITHUB_REF_NAME does not name versionName $version"
-            exit 1
-          fi
-          if gh release view "$tag" > /dev/null 2>&1; then
-            echo "$tag is already released"
-            exit 0
-          fi
-          apk="Chronicle-${version}-arm64.apk"
-          cp android/app/build/outputs/apk/release/app-release.apk "$apk"
-          # The APK's libmain.so is stripped; this one turns the addresses in a crash log into names.
-          symbols="libmain-${version}-arm64-symbols.so"
-          cp "$(find android/app/build/intermediates/cxx -path '*arm64-v8a/libmain.so' | head -n 1)" "$symbols"
-          sha=$(sha256sum "$apk" | cut -d' ' -f1)
-          cat > notes.md <<NOTES
-          Chronicle ${version} for Android: arm64 phones with Vulkan 1.3, Android 13 or later.
-
-          No game data is included: on first start the app asks for a disc image of your own Dark Cloud
-          disc and extracts it. See docs/ANDROID.md.
-
-          Signed with ${SIGNED_BY}. An APK signed with another key does not install over it; back up
-          \`save/\` (Files app, Chronicle) before switching.
-
-          If it crashes, open it again: it offers the log of the run that crashed to share.
-          \`${symbols}\` is for reading such a log; you don't need it to play.
-
-          SHA-256: \`${sha}\`
-          NOTES
-          gh release create "$tag" "$apk" "$symbols" --target "$GITHUB_SHA" --title "Chronicle ${version} (Android)" --notes-file notes.md
+      - run: echo "Android CI is off; build and publish locally."
