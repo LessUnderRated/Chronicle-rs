@@ -105,7 +105,9 @@ APK; it is there so that every build installs over the last and keeps the extrac
 saves. Releases before 0.5.0 were signed with a throwaway key: going from one of those takes an
 uninstall. `.github/workflows/android.yml` builds it on every push with the
 `ANDROID_KEYSTORE*` secrets if they exist, and uploads the APK. A push whose `versionName` has no release yet
-also publishes the APK as the GitHub release `android-v<version>`.
+also publishes the APK as the GitHub release `android-v<version>`. `android/publish.sh` publishes
+the one built locally the same way (with `GH_TOKEN`), after the commit is pushed; whichever comes
+first makes the release and the other leaves it.
 
 The native build can also be run without Gradle, which is quicker for working on the C++:
 
