@@ -193,10 +193,11 @@ virtual gamepad (`touch.rs`), so the game sees a controller.
 
 **Editing** (menu, *Edit touch controls*): the game holds still, touch any control (the 2× and ☰
 buttons too) and drag it where you want it; the panel's sliders set the picked control's size (25% to
-250% of the default) and opacity, *Reset all* goes back to the default layout and *Done* saves. The
-arrangement is kept per app (SharedPreferences) and scales with the window, so it survives rotation and
-a different screen. *Touch controls opacity* in the settings sets all of them at once, and *Hide touch
-controls* leaves only 2× and ☰.
+250% of the default) and the opacity of all of them, *Reset all* goes back to the default layout and
+*Done* saves. The panel is a strip along the top edge that hides while a control is dragged and
+moves to the bottom edge while the control placed is near the top. The arrangement is kept per app (SharedPreferences) and scales with the window, so it
+survives rotation and a different screen. Opacity is one value for every control, also *Touch controls
+opacity* in the settings, and *Hide touch controls* leaves only 2× and ☰.
 
 The pad goes away while a controller is connected (Bluetooth or USB) and comes back when it is
 disconnected; 2× and ☰ stay. No ready-made library fitted: RadialGamePad (Lemuroid's) is GPL-3.0 and lays

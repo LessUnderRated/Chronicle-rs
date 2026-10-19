@@ -327,44 +327,74 @@ public class ChronicleActivity extends SDLActivity implements TouchOverlay.Liste
 
     // ---- The controls' editor -----------------------------------------------------------------
 
+    /**
+     * A slim strip along the top edge, one row: what is picked, its size, the opacity of all the
+     * controls, Reset all and Done. It gets out of the way of the controls being placed: hidden while
+     * one is dragged, and at the bottom edge instead while the one placed is in the top part.
+     */
     private void buildEditPanel() {
         editPanel = new LinearLayout(this);
-        editPanel.setOrientation(LinearLayout.VERTICAL);
-        editPanel.setBackgroundColor(Color.argb(0xD0, 0x10, 0x12, 0x1A));
-        editPanel.setPadding(dp(16), dp(8), dp(16), dp(8));
+        editPanel.setOrientation(LinearLayout.HORIZONTAL);
+        editPanel.setGravity(Gravity.CENTER_VERTICAL);
+        editPanel.setBackgroundColor(Color.argb(0xC0, 0x10, 0x12, 0x1A));
+        editPanel.setPadding(dp(12), dp(2), dp(8), dp(2));
         editLabel = new TextView(this);
         editLabel.setTextColor(Color.WHITE);
-        editPanel.addView(editLabel);
+        editLabel.setTextSize(12);
+        editLabel.setMaxLines(2);
+        editPanel.addView(editLabel, new LinearLayout.LayoutParams(dp(120), ViewGroup.LayoutParams.WRAP_CONTENT));
 
         editSize = slider(R.string.edit_size, 25, 250, (value) -> overlay.setSelectedScale(value / 100f));
-        editOpacity = slider(R.string.edit_opacity, 5, 100, (value) -> overlay.setSelectedOpacity(value / 100f));
+        // One opacity for every control, the same as the settings' Touch controls opacity.
+        editOpacity = slider(R.string.edit_opacity, 5, 100, (value) -> overlay.setGlobalOpacity(value / 100f));
 
-        LinearLayout buttons = new LinearLayout(this);
-        Button reset = new Button(this);
+        Button reset = new Button(this, null, android.R.attr.borderlessButtonStyle);
         reset.setText(R.string.edit_reset);
+        reset.setTextColor(Color.WHITE);
         reset.setOnClickListener(v -> overlay.resetLayout());
-        Button done = new Button(this);
+        editPanel.addView(reset);
+        Button done = new Button(this, null, android.R.attr.borderlessButtonStyle);
         done.setText(R.string.edit_done);
+        done.setTextColor(Color.WHITE);
         done.setOnClickListener(v -> finishEditing());
-        buttons.addView(reset);
-        buttons.addView(done);
-        editPanel.addView(buttons);
+        editPanel.addView(done);
 
-        FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(dp(360), ViewGroup.LayoutParams.WRAP_CONTENT,
-            Gravity.CENTER);
         editPanel.setVisibility(android.view.View.GONE);
-        addContentView(editPanel, params);
+        addContentView(editPanel, editPanelAt(Gravity.TOP));
+    }
+
+    private FrameLayout.LayoutParams editPanelAt(int edge) {
+        FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(Math.min(dp(640),
+            getResources().getDisplayMetrics().widthPixels - dp(32)), ViewGroup.LayoutParams.WRAP_CONTENT,
+            edge | Gravity.CENTER_HORIZONTAL);
+        return params;
+    }
+
+    @Override
+    public void onEditDrag(boolean dragging, float y) {
+        if (dragging) {
+            editPanel.setVisibility(android.view.View.INVISIBLE);
+            return;
+        }
+        // Clear of the control just placed: at the bottom when it sits in the top part of the screen.
+        int edge = y < overlay.getHeight() * 0.4f ? Gravity.BOTTOM : Gravity.TOP;
+        editPanel.setLayoutParams(editPanelAt(edge));
+        editPanel.setVisibility(android.view.View.VISIBLE);
     }
 
     private interface IntSink {
         void accept(int value);
     }
 
+    /** A label over a slider, side by side with the panel's other parts. */
     private SeekBar slider(int label, int min, int max, IntSink sink) {
+        LinearLayout column = new LinearLayout(this);
+        column.setOrientation(LinearLayout.VERTICAL);
         TextView name = new TextView(this);
         name.setText(label);
         name.setTextColor(Color.LTGRAY);
-        editPanel.addView(name);
+        name.setTextSize(11);
+        column.addView(name);
         SeekBar bar = new SeekBar(this);
         bar.setMin(min);
         bar.setMax(max);
@@ -382,7 +412,8 @@ public class ChronicleActivity extends SDLActivity implements TouchOverlay.Liste
             @Override
             public void onStopTrackingTouch(SeekBar seekBar) {}
         });
-        editPanel.addView(bar);
+        column.addView(bar);
+        editPanel.addView(column, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         return bar;
     }
 
@@ -391,6 +422,7 @@ public class ChronicleActivity extends SDLActivity implements TouchOverlay.Liste
         Native.setPaused(true);
         overlay.setEditing(true);
         onSelectionChanged(null);
+        editPanel.setLayoutParams(editPanelAt(Gravity.TOP));
         editPanel.setVisibility(android.view.View.VISIBLE);
     }
 
@@ -405,11 +437,10 @@ public class ChronicleActivity extends SDLActivity implements TouchOverlay.Liste
         boolean any = id != null;
         editLabel.setText(any ? getString(R.string.edit_selected, id.toUpperCase()) : getString(R.string.edit_hint));
         editSize.setEnabled(any);
-        editOpacity.setEnabled(any);
         if (any) {
             editSize.setProgress(Math.round(overlay.selectedScale() * 100));
-            editOpacity.setProgress(Math.round(overlay.selectedOpacity() * 100));
         }
+        editOpacity.setProgress(Math.round(overlay.globalOpacity() * 100));
     }
 
     // ---- PS2 memory cards ---------------------------------------------------------------------

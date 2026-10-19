@@ -25,7 +25,7 @@ import java.util.Map;
  * the virtual gamepad, which also gives the default layout clear of the HUD); this draws them, hands
  * every touch on them over, and runs the two buttons of its own: the speed toggle (top left) and the
  * menu (top right). In edit mode a touch picks a control up and moves it instead, and the activity's
- * panel sets the size and opacity of the one picked.
+ * panel sets the size of the one picked. One opacity covers them all.
  */
 @SuppressLint("ViewConstructor")
 public class TouchOverlay extends View {
@@ -35,6 +35,9 @@ public class TouchOverlay extends View {
         void onSpeedChanged(int speed);
 
         void onSelectionChanged(String id);
+
+        /** A control picked up (true) or put down (false) in edit mode, and where it is now. */
+        void onEditDrag(boolean dragging, float y);
     }
 
     private static final String PREFS = "touch";
@@ -336,22 +339,6 @@ public class TouchOverlay extends View {
         invalidate();
     }
 
-    float selectedOpacity() {
-        JSONObject e = element(selected);
-        return e == null ? 1f : (float) e.optDouble("opacity", 1.0);
-    }
-
-    void setSelectedOpacity(float opacity) {
-        JSONObject e = element(selected);
-        if (e != null) {
-            try {
-                e.put("opacity", Math.max(0.05, Math.min(1.0, opacity)));
-            } catch (JSONException ignored) {
-            }
-            invalidate();
-        }
-    }
-
     String selected() {
         return selected;
     }
@@ -472,6 +459,17 @@ public class TouchOverlay extends View {
                 dragX = x;
                 dragY = y;
                 listener.onSelectionChanged(selected);
+                if (selected != null) {
+                    listener.onEditDrag(true, y);
+                }
+                break;
+            }
+            case MotionEvent.ACTION_UP:
+            case MotionEvent.ACTION_CANCEL: {
+                JSONObject e = element(selected);
+                if (e != null) {
+                    listener.onEditDrag(false, (float) e.optDouble("y", y));
+                }
                 break;
             }
             case MotionEvent.ACTION_MOVE: {
@@ -506,8 +504,12 @@ public class TouchOverlay extends View {
 
     // ---- Drawing ------------------------------------------------------------------------------
 
-    private int alpha(double opacity, float part) {
-        return Math.round(255 * part * (float) opacity * globalOpacity);
+    /**
+     * Every control at the one opacity. A layout saved before 0.5.6 can carry an opacity of its own
+     * per control, which is passed in and left out.
+     */
+    private int alpha(double ignored, float part) {
+        return Math.round(255 * part * globalOpacity);
     }
 
     @Override

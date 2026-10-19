@@ -53,10 +53,10 @@
     <string name="setting_volume">Volume</string>
     <string name="setting_controls_opacity">Touch controls opacity</string>
 
-    <string name="edit_hint">Touch a control to pick it up, then drag it. Its size and opacity are below.</string>
+    <string name="edit_hint">Drag a control to move it; touch one to set its size.</string>
     <string name="edit_selected">%1$s: drag to move</string>
     <string name="edit_size">Size</string>
-    <string name="edit_opacity">Opacity</string>
+    <string name="edit_opacity">Opacity (all)</string>
     <string name="edit_reset">Reset all</string>
     <string name="edit_done">Done</string>
 
