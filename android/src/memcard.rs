@@ -199,12 +199,19 @@ impl<'a> Card<'a> {
         Ok(out)
     }
 
-    /// A directory's entries: its first, ".", gives their number.
-    fn directory(&self, cluster: u32) -> Result<Vec<Entry>, String> {
-        let first = self.read_chain(cluster, ENTRY)?;
-        let count = entry(&first)
-            .ok_or("a directory on the card is damaged")?
-            .length as usize;
+    /// A directory's `count` entries. The number is the length of the directory's entry in its
+    /// parent; the root's is its own first entry, ".". A subdirectory's "." can say 0, as on cards the
+    /// PS2 itself wrote.
+    fn directory(&self, cluster: u32, count: Option<u32>) -> Result<Vec<Entry>, String> {
+        let count = match count {
+            Some(count) => count as usize,
+            None => {
+                let first = self.read_chain(cluster, ENTRY)?;
+                entry(&first)
+                    .ok_or("a directory on the card is damaged")?
+                    .length as usize
+            }
+        };
         if count == 0 || count > 4096 {
             return Err("a directory on the card is damaged".into());
         }
@@ -214,13 +221,13 @@ impl<'a> Card<'a> {
 
     fn files(&self) -> Result<Vec<CardFile>, String> {
         let mut files = Vec::new();
-        for dir in self.directory(self.root)? {
+        for dir in self.directory(self.root, None)? {
             if dir.mode & (MODE_EXISTS | MODE_DIRECTORY) != MODE_EXISTS | MODE_DIRECTORY
                 || dir.name.starts_with('.')
             {
                 continue;
             }
-            let Ok(entries) = self.directory(dir.cluster) else {
+            let Ok(entries) = self.directory(dir.cluster, Some(dir.length)) else {
                 continue;
             };
             for file in entries {
@@ -479,7 +486,8 @@ mod tests {
             let count = 2 + mine.len();
             let at = store(&vec![0u8; count * ENTRY], &mut fat, &mut clusters);
             let mut bytes = [
-                dir_entry(0x8427, count as u32, at, "."),
+                // As the PS2 writes it: the count is in the root's entry for the directory.
+                dir_entry(0x8427, 0, at, "."),
                 dir_entry(0x8427, 0, 0, ".."),
             ]
             .concat();
