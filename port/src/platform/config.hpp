@@ -52,6 +52,10 @@ struct Config : HostSettings {
     bool              swap_keeps_lock_on = false;
     bool              text_wipe = false; /**< Enables the developer text comparison and tuning tool. */
     bool              interpolation = true;
+    // video.water_flat: draws the water as a flat tinted sheet, without its refraction of the
+    // frame (the PS2's feedback trick). A diagnostic for the soft glow reported over the sea in
+    // Queens; off is retail.
+    bool              water_flat = false;
     ConfigAspect      aspect = ConfigAspect::Auto;
 #ifdef __ANDROID__
     // A phone is about twice as wide as it is tall, where a stretched 4:3 picture shows.

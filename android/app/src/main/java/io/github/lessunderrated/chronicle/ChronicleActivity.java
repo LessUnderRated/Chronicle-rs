@@ -225,6 +225,7 @@ public class ChronicleActivity extends SDLActivity implements TouchOverlay.Liste
         new Setting(R.string.setting_present, "video.present_mode", "\"fifo\"", new String[] {"On", "Fast", "Off"},
             new String[] {"\"fifo\"", "\"mailbox\"", "\"immediate\""}),
         new Setting(R.string.setting_interpolation, "video.interpolation", "true", ON_OFF, TRUE_FALSE),
+        new Setting(R.string.setting_water_flat, "video.water_flat", "false", ON_OFF, TRUE_FALSE),
         new Setting(R.string.setting_anisotropy, "video.anisotropy", "0", new String[] {"Off", "2x", "4x", "8x", "16x"},
             new String[] {"0", "2", "4", "8", "16"}),
         new Setting(R.string.setting_soft_focus, "video.soft_focus", "true", ON_OFF, TRUE_FALSE),

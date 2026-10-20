@@ -46,6 +46,7 @@
     <string name="setting_max_fps">Frame limit</string>
     <string name="setting_present">V-Sync</string>
     <string name="setting_interpolation">Smooth motion</string>
+    <string name="setting_water_flat">Flat water (debug)</string>
     <string name="setting_anisotropy">Anisotropic filter</string>
     <string name="setting_soft_focus">Soft focus</string>
     <string name="setting_text_font">Text font</string>

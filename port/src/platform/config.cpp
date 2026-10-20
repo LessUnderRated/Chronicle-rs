@@ -464,6 +464,9 @@ bool Apply(Config &config, std::string_view name, const Json &value) {
     if (name == "video.interpolation") {
         return ReadBool(value, config.interpolation);
     }
+    if (name == "video.water_flat") {
+        return ReadBool(value, config.water_flat);
+    }
     if (name == "video.max_fps") {
         double fps = 0.0;
         if (!ReadNumber(value, fps) || !(fps >= 0.0) || !std::isfinite(fps)) {
@@ -686,6 +689,7 @@ std::string ConfigSerialize(const Config &config) {
     root["video"]["boss_shadow"] = config.boss_shadow;
     root["video"]["present_mode"] = PresentModeName(config.present_mode);
     root["video"]["interpolation"] = config.interpolation;
+    root["video"]["water_flat"] = config.water_flat;
     root["video"]["max_fps"] = config.max_fps;
     root["video"]["width"] = config.window_width;
     root["video"]["height"] = config.window_height;
