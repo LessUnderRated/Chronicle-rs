@@ -33,6 +33,7 @@ pub const SDL_SCANCODE_AC_BACK: u32 = 270;
 
 pub const SDL_JOYSTICK_TYPE_GAMEPAD: u16 = 1;
 pub const SDL_JOYSTICK_AXIS_MAX: i16 = 32767;
+pub const SDL_JOYSTICK_AXIS_MIN: i16 = -32768;
 
 pub const SDL_GAMEPAD_BUTTON_SOUTH: c_int = 0;
 pub const SDL_GAMEPAD_BUTTON_EAST: c_int = 1;

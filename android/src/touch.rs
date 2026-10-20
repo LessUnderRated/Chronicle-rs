@@ -308,6 +308,19 @@ struct Outputs {
     axes: [i16; 6],
 }
 
+impl Outputs {
+    /// What the pad reports with nothing down. The triggers rest at AXIS_MIN, not 0: the virtual
+    /// gamepad's mapping reads them as full-range axes (`lefttrigger:a4`), and SDL normalizes a
+    /// full-range input of 0 to a half-pressed trigger (~16384), which the game treats as L2 and R2
+    /// held — the camera snapped behind the player and menus auto-scrolling.
+    fn unpressed() -> Outputs {
+        let mut out = Outputs::default();
+        out.axes[SDL_GAMEPAD_AXIS_LEFT_TRIGGER as usize] = SDL_JOYSTICK_AXIS_MIN;
+        out.axes[SDL_GAMEPAD_AXIS_RIGHT_TRIGGER as usize] = SDL_JOYSTICK_AXIS_MIN;
+        out
+    }
+}
+
 fn deflection(finger: &Finger, radius: f32) -> (f32, f32) {
     let (dx, dy) = (
         finger.position.0 - finger.origin.0,
@@ -327,7 +340,7 @@ fn axis(value: f32) -> i16 {
 
 impl State {
     fn outputs(&self) -> Outputs {
-        let mut out = Outputs::default();
+        let mut out = Outputs::unpressed();
         let radius = self.layout.stick_radius;
         for finger in self.fingers.values() {
             match finger.control {
@@ -729,10 +742,10 @@ pub fn pad_state() -> String {
     };
     let out = state.outputs();
     let mut buttons = out.buttons;
-    if out.axes[SDL_GAMEPAD_AXIS_LEFT_TRIGGER as usize] != 0 {
+    if out.axes[SDL_GAMEPAD_AXIS_LEFT_TRIGGER as usize] > 0 {
         buttons |= 1 << 30;
     }
-    if out.axes[SDL_GAMEPAD_AXIS_RIGHT_TRIGGER as usize] != 0 {
+    if out.axes[SDL_GAMEPAD_AXIS_RIGHT_TRIGGER as usize] > 0 {
         buttons |= 1 << 31;
     }
     let radius = state.layout.stick_radius;
@@ -801,13 +814,19 @@ mod tests {
             assert_eq!(state.outputs().buttons, 1 << button);
             state.fingers.remove(&7);
         }
-        assert_eq!(state.outputs(), Outputs::default());
+        assert_eq!(state.outputs(), Outputs::unpressed());
     }
 
     #[test]
     fn triggers_are_full_axes() {
         let mut state = state();
         let (x, y) = centre(&state, Control::Trigger(SDL_GAMEPAD_AXIS_RIGHT_TRIGGER));
+        // At rest a trigger reads fully off (axis MIN), not 0, which the gamepad mapping would
+        // otherwise normalize to half-pressed and hold L2/R2 down for the game.
+        assert_eq!(
+            state.outputs().axes[SDL_GAMEPAD_AXIS_RIGHT_TRIGGER as usize],
+            SDL_JOYSTICK_AXIS_MIN
+        );
         state.finger_down(1, x, y);
         assert_eq!(
             state.outputs().axes[SDL_GAMEPAD_AXIS_RIGHT_TRIGGER as usize],
@@ -845,7 +864,7 @@ mod tests {
         let mut state = state();
         state.finger_down(1, 700.0, 900.0);
         state.finger_motion(1, 703.0, 899.0);
-        assert_eq!(state.outputs(), Outputs::default());
+        assert_eq!(state.outputs(), Outputs::unpressed());
     }
 
     #[test]

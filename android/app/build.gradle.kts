@@ -70,8 +70,8 @@ android {
         // Vulkan 1.3's entry points are in the NDK's libvulkan.so from API 33; the renderer needs 1.3.
         minSdk = 33
         targetSdk = 36
-        versionCode = 13
-        versionName = "0.5.8"
+        versionCode = 14
+        versionName = "0.5.9"
 
         ndk {
             abiFilters += listOf("arm64-v8a")
