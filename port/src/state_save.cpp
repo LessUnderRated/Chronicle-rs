@@ -487,6 +487,8 @@ bool GameStateLoad(const std::filesystem::path &path, std::string *error) {
     if (ok) {
         ok = GetValue(file, &visual_count);
         section = "visuals";
+        std::fprintf(stderr, "state load parse: %llu visuals advertised\n",
+                     static_cast<unsigned long long>(visual_count));
     }
     struct VisualRecord {
         std::uint64_t              offset = 0;
@@ -496,51 +498,53 @@ bool GameStateLoad(const std::filesystem::path &path, std::string *error) {
         std::vector<uint32_t>      indices;
     };
     std::vector<VisualRecord> visuals;
+    auto load_array = [&](auto &out, std::uint64_t count, const char *what, std::uint64_t visual) {
+        if (!ok) {
+            return;
+        }
+        if (count > (1u << 26)) {
+            std::fprintf(stderr, "state load parse: visual %llu refuses %llu %s\n",
+                         static_cast<unsigned long long>(visual), static_cast<unsigned long long>(count), what);
+            ok = false;
+            return;
+        }
+        out.resize(count);
+        ok = Get(file, out.data(), count * sizeof(out[0]));
+        if (!ok) {
+            std::fprintf(stderr, "state load parse: visual %llu ran out of file in its %s\n",
+                         static_cast<unsigned long long>(visual), what);
+        }
+    };
     for (std::uint64_t i = 0; ok && i < visual_count; i++) {
-        VisualRecord record;
+        VisualRecord  record;
         std::uint64_t colour = 0;
         std::uint64_t strips = 0;
         std::uint64_t vertices = 0;
         std::uint64_t indices = 0;
-        ok = GetValue(file, &record.offset) && GetValue(file, &colour) && GetValue(file, &strips) &&
-             GetValue(file, &vertices) && GetValue(file, &indices);
+        // The save writes each array as a count then its bytes, not the three counts together.
+        ok = GetValue(file, &record.offset) && GetValue(file, &colour) && GetValue(file, &strips);
         if (!ok) {
             break;
         }
         record.vertex_colour = colour != 0;
-        if (strips > (1u << 20) || vertices > (1u << 26) || indices > (1u << 26)) {
-            std::fprintf(stderr,
-                         "state load parse: visual %llu refuses its counts (%llu strips, %llu vertices, %llu indices)\n",
-                         static_cast<unsigned long long>(i), static_cast<unsigned long long>(strips),
-                         static_cast<unsigned long long>(vertices), static_cast<unsigned long long>(indices));
-            ok = false;
-            break;
-        }
-        record.strips.resize(strips);
-        ok = Get(file, record.strips.data(), strips * sizeof(Draw3DStrip));
-        if (!ok) {
-            break;
-        }
-        record.vertices.resize(vertices);
-        ok = Get(file, record.vertices.data(), vertices * sizeof(gfx::Vertex3D));
-        if (!ok) {
-            break;
-        }
-        record.indices.resize(indices);
-        ok = Get(file, record.indices.data(), indices * sizeof(uint32_t));
+        load_array(record.strips, strips, "strips", i);
+        ok = ok && GetValue(file, &vertices);
+        load_array(record.vertices, vertices, "vertices", i);
+        ok = ok && GetValue(file, &indices);
+        load_array(record.indices, indices, "indices", i);
         if (!ok) {
             break;
         }
         visuals.push_back(std::move(record));
     }
+    long long at = std::ftell(file);
     std::fprintf(stderr, "state load parse: %llu visuals at %lld\n",
-                 static_cast<unsigned long long>(visuals.size()),
-                 ok ? static_cast<long long>(std::ftell(file)) : -1LL);
+                 static_cast<unsigned long long>(visuals.size()), at);
     std::fclose(file);
     if (!ok) {
         if (error->empty()) {
             *error = "the state's " + std::string(section) + " section is short or wrongly shaped (at " +
-                     std::to_string(static_cast<long long>(std::ftell(file))) + " bytes)";
+                     std::to_string(at) + " bytes)";
         }
         return false;
     }
