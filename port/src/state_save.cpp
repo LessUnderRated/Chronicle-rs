@@ -27,7 +27,7 @@ namespace fs = std::filesystem;
 namespace {
 
 constexpr char kMagic[4] = {'D', 'C', 'S', 'T'};
-constexpr std::uint32_t kVersion = 3;
+constexpr std::uint32_t kVersion = 4;
 
 std::uint64_t Fingerprint(const unsigned char *bytes, std::size_t size) {
     std::uint64_t hash = 0xcbf29ce484222325;
@@ -341,32 +341,38 @@ bool GameStateSave(const std::filesystem::path &path, std::string *error) {
     for (const auto &bytes : contents) {
         chunk_bytes += bytes.size();
     }
-    // The visuals' build inputs: which VU block was built from which model data, both at offsets
-    // in the reservation, so a load re-runs the builds against the memory it brought back.
-    std::vector<Draw3DVisualInput> visuals;
+    // The models' built render records: the only copy of their geometry exists here and in the
+    // running session — the game's model data is a scratch buffer long overwritten — so the state
+    // carries the records whole, at their block's offset in the reservation.
+    auto lasting = Draw3DLastingVisuals();
+    std::vector<std::pair<const Draw3DVisual *, std::uint64_t>> records;
     std::uint64_t region = reinterpret_cast<std::uint64_t>(ArenaRegionBase());
     std::uint64_t region_size = ArenaRegionSize();
-    for (const Draw3DVisualInput &input : Draw3DVisualInputs()) {
-        std::uint64_t block = reinterpret_cast<std::uintptr_t>(input.block) - region;
-        std::uint64_t data = reinterpret_cast<std::uintptr_t>(input.data) - region;
-        if (input.kind == 0 || input.block == nullptr || input.data == nullptr ||
-            block >= region_size || data >= region_size) {
+    std::uint64_t visual_vertices = 0;
+    for (const auto &[block, visual] : lasting) {
+        std::uint64_t offset = reinterpret_cast<std::uintptr_t>(block) - region;
+        if (offset >= region_size) {
             continue;
         }
-        visuals.push_back({reinterpret_cast<const void *>(block), reinterpret_cast<const void *>(data), input.kind,
-                           input.unknown0, input.unknown1});
+        visual_vertices += visual->vertices.size();
+        records.push_back({visual, offset});
     }
-    std::fprintf(stderr, "state save: table %s, %llu chunk bytes, %llu blocks, %zu visuals, region %p, image base %llx\n",
+    std::fprintf(stderr,
+                 "state save: table %s, %llu chunk bytes, %llu blocks, %zu visuals (%llu vertices), region %p, image base %llx\n",
                  layout.fingerprint != 0 ? "on" : "off", static_cast<unsigned long long>(chunk_bytes),
-                 static_cast<unsigned long long>(blocks), visuals.size(), static_cast<void *>(ArenaRegionBase()),
+                 static_cast<unsigned long long>(blocks), records.size(),
+                 static_cast<unsigned long long>(visual_vertices), static_cast<void *>(ArenaRegionBase()),
                  static_cast<unsigned long long>(module.base));
-    PutValue(file, visuals.size(), error);
-    for (const Draw3DVisualInput &input : visuals) {
-        PutValue(file, reinterpret_cast<std::uint64_t>(input.block), error);
-        PutValue(file, reinterpret_cast<std::uint64_t>(input.data), error);
-        PutValue(file, static_cast<std::uint64_t>(input.kind), error);
-        PutValue(file, static_cast<std::uint64_t>(input.unknown0), error);
-        PutValue(file, static_cast<std::uint64_t>(input.unknown1), error);
+    PutValue(file, records.size(), error);
+    for (const auto &[visual, offset] : records) {
+        PutValue(file, offset, error);
+        PutValue(file, visual->vertex_colour ? 1 : 0, error);
+        PutValue(file, visual->strips.size(), error);
+        Put(file, visual->strips.data(), visual->strips.size() * sizeof(Draw3DStrip), error);
+        PutValue(file, visual->vertices.size(), error);
+        Put(file, visual->vertices.data(), visual->vertices.size() * sizeof(gfx::Vertex3D), error);
+        PutValue(file, visual->indices.size(), error);
+        Put(file, visual->indices.data(), visual->indices.size() * sizeof(uint32_t), error);
     }
     bool ok = std::fflush(file) == 0 && error->empty();
     if (std::fclose(file) != 0) {
@@ -467,20 +473,46 @@ bool GameStateLoad(const std::filesystem::path &path, std::string *error) {
     if (ok) {
         ok = GetValue(file, &visual_count);
     }
-    std::vector<Draw3DVisualInput> visuals;
+    struct VisualRecord {
+        std::uint64_t              offset = 0;
+        bool                       vertex_colour = false;
+        std::vector<Draw3DStrip>   strips;
+        std::vector<gfx::Vertex3D> vertices;
+        std::vector<uint32_t>      indices;
+    };
+    std::vector<VisualRecord> visuals;
     for (std::uint64_t i = 0; ok && i < visual_count; i++) {
-        std::uint64_t block_offset = 0;
-        std::uint64_t data_offset = 0;
-        std::uint64_t kind = 0;
-        std::uint64_t unknown0 = 0;
-        std::uint64_t unknown1 = 0;
-        ok = GetValue(file, &block_offset) && GetValue(file, &data_offset) && GetValue(file, &kind) &&
-             GetValue(file, &unknown0) && GetValue(file, &unknown1);
+        VisualRecord record;
+        std::uint64_t colour = 0;
+        std::uint64_t strips = 0;
+        std::uint64_t vertices = 0;
+        std::uint64_t indices = 0;
+        ok = GetValue(file, &record.offset) && GetValue(file, &colour) && GetValue(file, &strips) &&
+             GetValue(file, &vertices) && GetValue(file, &indices);
         if (!ok) {
             break;
         }
-        visuals.push_back({reinterpret_cast<const void *>(block_offset), reinterpret_cast<const void *>(data_offset),
-                           static_cast<int>(kind), static_cast<int>(unknown0), static_cast<int>(unknown1)});
+        record.vertex_colour = colour != 0;
+        if (strips > (1u << 20) || vertices > (1u << 26) || indices > (1u << 26)) {
+            ok = false;
+            break;
+        }
+        record.strips.resize(strips);
+        ok = Get(file, record.strips.data(), strips * sizeof(Draw3DStrip));
+        if (!ok) {
+            break;
+        }
+        record.vertices.resize(vertices);
+        ok = Get(file, record.vertices.data(), vertices * sizeof(gfx::Vertex3D));
+        if (!ok) {
+            break;
+        }
+        record.indices.resize(indices);
+        ok = Get(file, record.indices.data(), indices * sizeof(uint32_t));
+        if (!ok) {
+            break;
+        }
+        visuals.push_back(std::move(record));
     }
     std::fclose(file);
     if (!ok) {
@@ -515,18 +547,23 @@ bool GameStateLoad(const std::filesystem::path &path, std::string *error) {
         std::memcpy(reinterpret_cast<void *>(module.base + chunks[i].offset), contents[i].data(), contents[i].size());
     }
     // The game's memory says every model's VU data is built, but this session's records of them
-    // are gone or another session's: rebuilt from the game memory the restore brought back, after
-    // the textures their materials name.
+    // are gone: rebuilt from the records the state carried, after the textures their materials
+    // name. The blocks already hold their tags.
     TextureRebuild();
     Draw3DClearVisuals();
-    for (const Draw3DVisualInput &input : visuals) {
-        Draw3DRebuildVisual({reinterpret_cast<const void *>(reinterpret_cast<std::uint64_t>(ArenaRegionBase()) +
-                                                             reinterpret_cast<std::uint64_t>(input.block)),
-                             reinterpret_cast<const void *>(reinterpret_cast<std::uint64_t>(ArenaRegionBase()) +
-                                                            reinterpret_cast<std::uint64_t>(input.data)),
-                             input.kind, input.unknown0, input.unknown1});
+    std::size_t vertices = 0;
+    for (const VisualRecord &record : visuals) {
+        Draw3DVisual &visual = Draw3DRegisterVisual(
+            reinterpret_cast<unsigned int *>(reinterpret_cast<std::uint64_t>(ArenaRegionBase()) + record.offset), false);
+        visual.vertex_colour = record.vertex_colour;
+        visual.strips = record.strips;
+        visual.vertices = record.vertices;
+        visual.indices = record.indices;
+        vertices += visual.vertices.size();
+        Draw3DFinishVisual(visual);
     }
-    std::fprintf(stderr, "state load: %zu pointers rebased, %zu visuals rebuilt\n", rebased, visuals.size());
+    std::fprintf(stderr, "state load: %zu pointers rebased, %zu visuals rebuilt (%zu vertices)\n", rebased,
+                 visuals.size(), vertices);
     return true;
 }
 

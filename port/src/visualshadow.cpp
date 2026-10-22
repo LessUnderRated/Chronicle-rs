@@ -352,11 +352,6 @@ int BuildShadowVisual(u_int *block, u_int *model_data) {
 PORT_OVERRIDE int CVisualShadow::CreateVUdataShadow(u_int *block, u_int *model_data) {
     vu_data = block;
     vu_size = BuildShadowVisual(block, model_data);
-    if (Draw3DVisual *visual = Draw3DFindVisual(block)) {
-        visual->source_kind = 2;
-        visual->source_block = block;
-        visual->source_data = model_data;
-    }
     return vu_size;
 }
 
