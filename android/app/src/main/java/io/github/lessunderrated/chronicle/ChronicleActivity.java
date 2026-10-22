@@ -58,6 +58,9 @@ public class ChronicleActivity extends SDLActivity implements TouchOverlay.Liste
         addContentView(overlay, new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
             ViewGroup.LayoutParams.MATCH_PARENT));
         buildEditPanel();
+        if (savedInstanceState == null) {
+            overlay.post(this::offerLastState);
+        }
     }
 
     private int dp(int value) {
@@ -177,23 +180,38 @@ public class ChronicleActivity extends SDLActivity implements TouchOverlay.Liste
         return new File(new File(getFilesDir(), "save/states"), "slot-" + slot + ".dcst");
     }
 
-    /** What the last state request reported, shown over the menu until it is seen. */
-    private long lastStateShown;
-
-    private String lastStateLine() {
-        try {
-            File file = new File(new File(getFilesDir(), "save/states"), "last.json");
-            JSONObject result = new JSONObject(new String(Files.readAllBytes(file.toPath()), StandardCharsets.UTF_8));
-            if (file.lastModified() <= lastStateShown) {
-                return null;
+    /** The slot whose file was written last, or -1 when none exist. */
+    private int lastSavedSlot() {
+        long newest = -1;
+        int slot = -1;
+        for (int i = 0; i < STATE_SLOTS; i++) {
+            File file = stateFile(i);
+            if (file.isFile() && file.lastModified() > newest) {
+                newest = file.lastModified();
+                slot = i;
             }
-            lastStateShown = file.lastModified();
-            String action = getString(result.optBoolean("save") ? R.string.menu_save_state : R.string.menu_load_state);
-            String outcome = result.optBoolean("ok") ? "ok" : "failed: " + result.optString("error", "");
-            return getString(R.string.state_last, action, result.optInt("slot"), outcome);
-        } catch (IOException | JSONException e) {
-            return null;
         }
+        return slot;
+    }
+
+    /** On a fresh start, offer the last saved slot before the game runs under the player. */
+    private void offerLastState() {
+        int slot = lastSavedSlot();
+        if (slot < 0 || isFinishing()) {
+            return;
+        }
+        Native.setPaused(true);
+        menuOpen = true;
+        dialog()
+            .setTitle(R.string.state_offer_title)
+            .setMessage(getString(R.string.state_offer_message, slot + 1))
+            .setPositiveButton(R.string.state_offer_load, (d, w) -> {
+                Native.setSetting("state.request", "\"load:" + slot + "\"");
+                resume();
+            })
+            .setNegativeButton(R.string.state_offer_skip, (d, w) -> resume())
+            .setOnCancelListener(d -> resume())
+            .show();
     }
 
     private void chooseStateSlot(boolean save) {
@@ -213,9 +231,6 @@ public class ChronicleActivity extends SDLActivity implements TouchOverlay.Liste
                 }
                 Native.setSetting("state.request", "\"" + (save ? "save" : "load") + ":" + which + "\"");
                 resume();
-                // The game answers between ticks and its result goes to the log; hand the log over
-                // once it has, for pasting to whoever is helping.
-                overlay.postDelayed(() -> CrashReport.copy(this, CrashReport.currentRun(this)), 1500);
             })
             .setNegativeButton(R.string.menu_back, (d, w) -> onMenu())
             .setOnCancelListener(d -> onMenu())

@@ -43,7 +43,10 @@
     <string name="menu_load_state">Load state</string>
     <string name="state_slot">Slot %1$d</string>
     <string name="state_slot_empty">Slot %1$d (empty)</string>
-    <string name="state_last">%1$s of slot %2$d: %3$s</string>
+    <string name="state_offer_title">Load save state?</string>
+    <string name="state_offer_message">Load the last save state (slot %1$d)?</string>
+    <string name="state_offer_load">Load</string>
+    <string name="state_offer_skip">Not now</string>
 
     <string name="setting_aspect">Aspect ratio</string>
     <string name="setting_title_aspect">Title &amp; opening</string>
