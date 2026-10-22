@@ -375,11 +375,7 @@ void RenderAudio(void *, float *out, int frames) {
     audio::DefaultMixer().Render(out, frames);
 }
 
-// The state round-trip: save at --state-frame's frame, and load at the frame 180 ticks later (or at
-// the same frame without a save). The audio output is stopped around both, since its callback
-// reads the game's memory on another thread, and the clock re-anchors after a load, as it does
-// after a pause.
-void StateHookPump() {
+void StateApplyPending() {
     bool save = false;
     int  slot = 0;
     while (GameStateTakeRequest(&save, &slot)) {
@@ -393,6 +389,13 @@ void StateHookPump() {
             break;
         }
     }
+}
+
+// The state round-trip: save at --state-frame's frame, and load at the frame 180 ticks later (or at
+// the same frame without a save). The audio output is stopped around both, since its callback
+// reads the game's memory on another thread, and the clock re-anchors after a load, as it does
+// after a pause. Menu save/load is not applied here: this pump also runs inside DataLoad.
+void StateHookPump() {
     if (g_options.state_save == nullptr && g_options.state_load == nullptr) {
         return;
     }
@@ -630,6 +633,10 @@ int Run(int argc, const char **argv) {
 }
 
 } // namespace
+
+void GameStateApplyPending() {
+    StateApplyPending();
+}
 
 PORT_OVERRIDE int main(int argc, const char **argv, const char **envp) {
     return Run(argc, argv);

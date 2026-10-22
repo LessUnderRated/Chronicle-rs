@@ -194,23 +194,18 @@ public class ChronicleActivity extends SDLActivity implements TouchOverlay.Liste
         return slot;
     }
 
-    /** On a fresh start, offer the last saved slot before the game runs under the player. */
+    /** On a fresh start, offer the last saved slot. The load waits for a tick of the game. */
     private void offerLastState() {
         int slot = lastSavedSlot();
         if (slot < 0 || isFinishing()) {
             return;
         }
-        Native.setPaused(true);
-        menuOpen = true;
         dialog()
             .setTitle(R.string.state_offer_title)
             .setMessage(getString(R.string.state_offer_message, slot + 1))
-            .setPositiveButton(R.string.state_offer_load, (d, w) -> {
-                Native.setSetting("state.request", "\"load:" + slot + "\"");
-                resume();
-            })
-            .setNegativeButton(R.string.state_offer_skip, (d, w) -> resume())
-            .setOnCancelListener(d -> resume())
+            .setPositiveButton(R.string.state_offer_load,
+                (d, w) -> Native.setSetting("state.request", "\"load:" + slot + "\""))
+            .setNegativeButton(R.string.state_offer_skip, null)
             .show();
     }
 

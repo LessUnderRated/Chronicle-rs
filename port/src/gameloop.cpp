@@ -43,6 +43,7 @@
 #include "save_slots.hpp"
 #include "savedata.hpp"
 #include "snd.hpp"
+#include "state_save.hpp"
 #include "texture.hpp"
 #include "textwipe.hpp"
 #include "title/opening.hpp"
@@ -927,6 +928,8 @@ int RunGame(int argc, char **argv) {
 
         int result;
         do {
+            // Menu save/load waits for this boundary so a load cannot land inside DataLoad.
+            GameStateApplyPending();
             if (FrameBoundaryStop()) {
                 return kExitOk;
             }

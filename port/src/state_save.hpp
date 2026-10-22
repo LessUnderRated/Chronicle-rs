@@ -35,3 +35,7 @@ void GameStateRequest(bool save, int slot);
 bool GameStateTakeRequest(bool *save, int *slot);
 // Runs one request at once: the save root's states/slot-<N>.dcst, and the result beside it.
 bool GameStateRunRequest(const std::filesystem::path &save_root, bool save, int slot);
+// Applies every queued menu request. Call only at a tick of RunGame's main loop, never from a
+// clock pump: those also run inside DataLoad and start-up waits, and a load there leaves boot
+// running on top of the restored game.
+void GameStateApplyPending();
