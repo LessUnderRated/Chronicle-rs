@@ -40,6 +40,7 @@
 #include "platform/window.hpp"
 #include "screen.hpp"
 #include "snd.hpp"
+#include "state_save.hpp"
 #include "title/opening.hpp"
 #include "title/rushmovi.hpp"
 #include "title/title.hpp"
@@ -71,6 +72,10 @@ struct Options {
     bool         screenshot_fps = false;
     const char  *export_text = nullptr;
     const char  *font = nullptr;
+    // The state round-trip hooks: save the whole game to a file, and load one, between ticks.
+    const char  *state_save = nullptr;
+    const char  *state_load = nullptr;
+    int          state_frame = 120;
 };
 
 Options g_options;
@@ -102,6 +107,11 @@ Options g_options;
                  "test hooks:\n"
                  "  --jump MODE[:MAP]  start in edit:<map>, dungeon:<0-6>, title, rush, opening or menu,\n"
                  "                     skipping the warm-up (DC_JUMP); see docs/PC.md\n"
+                 "  --state-save FILE  write a save state at --state-frame's frame (test hook; the file\n"
+                 "                     holds only this session)\n"
+                 "  --state-load FILE  load a save state at --state-frame's frame, or 180 frames after a\n"
+                 "                     --state-save in the same run\n"
+                 "  --state-frame N    the frame the state hooks run at (default 120)\n"
                  "  --fast-load        loading-screen holds and fades of a few ticks (DC_FAST_LOAD=1)\n"
                  "  --give ITEM,...    give the party these item and weapon numbers when a town or dungeon\n"
                  "                     starts, unless it holds them (DC_GIVE); see docs/PC.md\n",
@@ -152,6 +162,12 @@ Options ParseOptions(int argc, const char **argv) {
             options.export_text = value();
         } else if (arg == "--font") {
             options.font = value();
+        } else if (arg == "--state-save") {
+            options.state_save = value();
+        } else if (arg == "--state-load") {
+            options.state_load = value();
+        } else if (arg == "--state-frame") {
+            options.state_frame = static_cast<int>(number());
         } else if (arg == "--show-fps") {
             options.show_fps = true;
         } else if (arg == "--screenshot-fps") {
@@ -277,11 +293,14 @@ void PumpAndroid() {
 }
 #endif
 
+void StateHookPump();
+
 void PumpHost() {
 #ifdef __ANDROID__
     PumpAndroid();
 #endif
     BgmTestPump();
+    StateHookPump();
     if (!WindowPollEvents()) {
         GameRequestStop();
     }
@@ -331,6 +350,44 @@ void LoadInputScript(const char *path) {
 
 void RenderAudio(void *, float *out, int frames) {
     audio::DefaultMixer().Render(out, frames);
+}
+
+// The state round-trip: save at --state-frame's frame, and load at the frame 180 ticks later (or at
+// the same frame without a save). The audio output is stopped around both, since its callback
+// reads the game's memory on another thread, and the clock re-anchors after a load, as it does
+// after a pause.
+void StateHookPump() {
+    if (g_options.state_save == nullptr && g_options.state_load == nullptr) {
+        return;
+    }
+    static int load_frame = -1;
+    if (load_frame < 0) {
+        load_frame = g_options.state_save != nullptr ? g_options.state_frame + 180 : g_options.state_frame;
+    }
+    static bool saved = false;
+    static bool loaded = false;
+    std::string error;
+    if (!saved && g_options.state_save != nullptr && GameFrameCount() >= g_options.state_frame) {
+        saved = true;
+        AudioOutputStop();
+        bool ok = GameStateSave(PathsFromUtf8(g_options.state_save), &error);
+        AudioOutputStart(audio::DefaultMixer().Rate(), RenderAudio, nullptr);
+        std::fprintf(stderr, "state save: %s\n", ok ? "ok" : error.c_str());
+        if (!ok) {
+            std::exit(kExitFailure);
+        }
+    }
+    if (!loaded && g_options.state_load != nullptr && GameFrameCount() >= load_frame) {
+        loaded = true;
+        AudioOutputStop();
+        bool ok = GameStateLoad(PathsFromUtf8(g_options.state_load), &error);
+        AudioOutputStart(audio::DefaultMixer().Rate(), RenderAudio, nullptr);
+        std::fprintf(stderr, "state load: %s\n", ok ? "ok" : error.c_str());
+        if (!ok) {
+            std::exit(kExitFailure);
+        }
+        ClockSetTickRate(ClockTickRate());
+    }
 }
 
 void ReportShaderProgress(uint32_t done, uint32_t total) {

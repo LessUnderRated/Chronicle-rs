@@ -253,12 +253,24 @@ Cloud save on it into the game's load screen (`memcard.rs`):
 
 ## Save states
 
-Not yet. A save state has to hold everything the running game holds: its arenas, and the port's own
-state beside them (the textures and meshes on the GPU, the sound banks, the caches in the host's heap),
-which the game's memory points into. Restoring the game's memory alone would leave those pointers
-naming objects that no longer exist. The way there is to make the port's host state rebuildable from
-the game's memory (textures re-uploaded, banks reloaded) and then snapshot the arenas and the game's
-globals; until then the game saves where it always has, with the autosave on arriving in a town.
+In progress, phase one landed. A save state has to hold everything the running game holds: its
+arenas, and the port's own state beside them (the textures and meshes on the GPU, the sound banks,
+the caches in the host's heap), which the game's memory points into. Restoring the game's memory
+alone would leave those pointers naming objects that no longer exist.
+
+What is there now (`port/src/state_save.cpp`, Kazarov's `ArenaBlockRestore`): a state records the
+image's writable globals (.data and .bss, clipped to what the kernel reports writable) and every
+arena block, and a load puts the blocks back at their recorded addresses (unmapping a block the
+owner has since grown, zeroing every block the state does not hold) and writes the globals back,
+all between ticks with the audio output stopped. States are per session: they record raw
+addresses, and a fresh process lays its image and arenas elsewhere. The PC test hooks exercise the
+round trip: `--state-save FILE`, `--state-load FILE`, `--state-frame N`.
+
+Still to come: the app's menu rows for it, restoring across sessions (rebase the recorded
+addresses onto where the new process laid things), and the audit of host state that outlives a
+load (textures re-uploaded only when the game touches them, sound banks, the texture registry),
+which today shows at worst as one frame of a stale image. Until the feature is finished the game
+saves where it always has, with the autosave on arriving in a town.
 
 ## Where it stands
 
