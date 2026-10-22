@@ -43,11 +43,6 @@
     <string name="menu_load_state">Load state</string>
     <string name="state_slot">Slot %1$d</string>
     <string name="state_slot_empty">Slot %1$d (empty)</string>
-    <string name="state_session">States persist across closing and reopening the app; one saved by a different app version is refused.</string>
-    <string name="state_saved">Saved state to slot %1$d</string>
-    <string name="state_loaded">Loaded state from slot %1$d</string>
-    <string name="state_failed">%1$s slot %2$d failed: %3$s</string>
-    <string name="state_waiting">The game has not answered yet; check the menu for the result.</string>
     <string name="state_last">%1$s of slot %2$d: %3$s</string>
 
     <string name="setting_aspect">Aspect ratio</string>

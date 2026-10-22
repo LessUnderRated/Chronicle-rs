@@ -331,6 +331,14 @@ bool GameStateSave(const std::filesystem::path &path, std::string *error) {
         PutValue(file, block.lead, error);
         Put(file, ArenaRegionBase() + block.offset, block.usable, error);
     }
+    std::uint64_t chunk_bytes = 0;
+    for (const auto &bytes : contents) {
+        chunk_bytes += bytes.size();
+    }
+    std::fprintf(stderr, "state save: table %s, %llu chunk bytes, %llu blocks, region %p, image base %llx\n",
+                 layout.fingerprint != 0 ? "on" : "off", static_cast<unsigned long long>(chunk_bytes),
+                 static_cast<unsigned long long>(blocks), static_cast<void *>(ArenaRegionBase()),
+                 static_cast<unsigned long long>(module.base));
     bool ok = std::fflush(file) == 0 && error->empty();
     if (std::fclose(file) != 0) {
         ok = false;
@@ -436,6 +444,9 @@ bool GameStateLoad(const std::filesystem::path &path, std::string *error) {
 
     // Blocks first — the globals point into them — then the other blocks zeroed, then the globals,
     // with the pointers that named the saved image moved by the base difference.
+    std::fprintf(stderr, "state load: fingerprint %016llx, %zu chunks, %zu blocks, image base %llx -> %llx\n",
+                 static_cast<unsigned long long>(fingerprint), chunks.size(), blocks.size(),
+                 static_cast<unsigned long long>(old_base), static_cast<unsigned long long>(module.base));
     for (std::size_t i = 0; i < blocks.size(); i++) {
         ArenaBlockRestore(reinterpret_cast<const void *>(module.base + blocks[i].owner_offset), blocks[i].offset,
                           blocks[i].usable, blocks[i].lead, block_contents[i].data(), block_contents[i].size());

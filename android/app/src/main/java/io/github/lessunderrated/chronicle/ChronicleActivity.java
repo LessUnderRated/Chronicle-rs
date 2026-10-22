@@ -7,7 +7,6 @@ import android.graphics.Color;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.ParcelFileDescriptor;
-import android.widget.Toast;
 import android.view.Gravity;
 import android.view.KeyEvent;
 import android.view.ViewGroup;
@@ -115,7 +114,6 @@ public class ChronicleActivity extends SDLActivity implements TouchOverlay.Liste
         Native.setPaused(true);
         String speed = Native.speed() == 2 ? getString(R.string.menu_speed_fast) : getString(R.string.menu_speed_normal);
         String controls = overlay.hidden() ? getString(R.string.menu_show_controls) : getString(R.string.menu_hide_controls);
-        String last = lastStateLine();
         String[] items = {
             getString(R.string.menu_resume),
             speed,
@@ -128,7 +126,7 @@ public class ChronicleActivity extends SDLActivity implements TouchOverlay.Liste
             getString(R.string.menu_share_log),
             getString(R.string.menu_quit),
         };
-        AlertDialog.Builder builder = dialog()
+        dialog()
             .setTitle(R.string.app_name)
             .setItems(items, (d, which) -> {
                 switch (which) {
@@ -167,11 +165,8 @@ public class ChronicleActivity extends SDLActivity implements TouchOverlay.Liste
                     default:
                         resume();
                 }
-            });
-        if (last != null) {
-            builder.setMessage(last);
-        }
-        builder.setOnCancelListener(d -> resume())
+            })
+            .setOnCancelListener(d -> resume())
             .show();
     }
 
@@ -211,61 +206,20 @@ public class ChronicleActivity extends SDLActivity implements TouchOverlay.Liste
         }
         dialog()
             .setTitle(save ? R.string.menu_save_state : R.string.menu_load_state)
-            .setMessage(getString(R.string.state_session))
             .setItems(rows, (d, which) -> {
                 if (!save && !stateFile(which).exists()) {
                     resume();
                     return;
                 }
-                long before = stateFileResultTime();
                 Native.setSetting("state.request", "\"" + (save ? "save" : "load") + ":" + which + "\"");
                 resume();
-                watchStateResult(save, which, before, 0);
+                // The game answers between ticks and its result goes to the log; hand the log over
+                // once it has, for pasting to whoever is helping.
+                overlay.postDelayed(() -> CrashReport.copy(this, CrashReport.currentRun(this)), 1500);
             })
             .setNegativeButton(R.string.menu_back, (d, w) -> onMenu())
             .setOnCancelListener(d -> onMenu())
             .show();
-    }
-
-    private File stateResultFile() {
-        return new File(new File(getFilesDir(), "save/states"), "last.json");
-    }
-
-    private long stateFileResultTime() {
-        File file = stateResultFile();
-        return file.exists() ? file.lastModified() : 0;
-    }
-
-    /** The result lands in last.json a moment after the request; a toast says what happened. */
-    private void watchStateResult(boolean save, int slot, long before, int round) {
-        overlay.postDelayed(() -> {
-            File file = stateResultFile();
-            long time = file.exists() ? file.lastModified() : 0;
-            if (time <= before && round < 4) {
-                watchStateResult(save, slot, before, round + 1);
-                return;
-            }
-            String message;
-            if (time <= before) {
-                message = getString(R.string.state_waiting);
-            } else {
-                try {
-                    JSONObject result = new JSONObject(new String(Files.readAllBytes(file.toPath()), StandardCharsets.UTF_8));
-                    boolean ok = result.optBoolean("ok");
-                    if (ok) {
-                        message = getString(save ? R.string.state_saved : R.string.state_loaded, slot + 1);
-                    } else {
-                        message = getString(R.string.state_failed,
-                            getString(save ? R.string.menu_save_state : R.string.menu_load_state), slot + 1,
-                            result.optString("error", "unknown"));
-                    }
-                } catch (IOException | JSONException e) {
-                    message = getString(R.string.state_failed,
-                        getString(save ? R.string.menu_save_state : R.string.menu_load_state), slot + 1, "unreadable");
-                }
-            }
-            Toast.makeText(this, message, Toast.LENGTH_LONG).show();
-        }, 700);
     }
 
     private void resume() {
