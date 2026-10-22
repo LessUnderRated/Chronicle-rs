@@ -33,9 +33,9 @@ bool GameStateLoad(const std::filesystem::path &path, std::string *error);
 void GameStateRequest(bool save, int slot);
 // Runs one pending request, if there is one; the caller stops the audio output around it.
 bool GameStateTakeRequest(bool *save, int *slot);
+bool GameStateHasPending();
 // Runs one request at once: the save root's states/slot-<N>.dcst, and the result beside it.
 bool GameStateRunRequest(const std::filesystem::path &save_root, bool save, int slot);
-// Applies every queued menu request. Call only at a tick of RunGame's main loop, never from a
-// clock pump: those also run inside DataLoad and start-up waits, and a load there leaves boot
-// running on top of the restored game.
-void GameStateApplyPending();
+// Applies every queued menu request. True if a load ran. Call after initialize_data and
+// SndInit, or at a tick of RunGame, never from a clock pump inside DataLoad.
+bool GameStateApplyPending();

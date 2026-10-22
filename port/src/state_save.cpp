@@ -645,6 +645,10 @@ bool GameStateTakeRequest(bool *save, int *slot) {
     return true;
 }
 
+bool GameStateHasPending() {
+    return !g_requests.empty();
+}
+
 bool GameStateRunRequest(const std::filesystem::path &save_root, bool save, int slot) {
     fs::path path = save_root / StatePath(slot);
     std::error_code unused;

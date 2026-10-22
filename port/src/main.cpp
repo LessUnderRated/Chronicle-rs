@@ -375,7 +375,8 @@ void RenderAudio(void *, float *out, int frames) {
     audio::DefaultMixer().Render(out, frames);
 }
 
-void StateApplyPending() {
+bool StateApplyPending() {
+    bool loaded = false;
     bool save = false;
     int  slot = 0;
     while (GameStateTakeRequest(&save, &slot)) {
@@ -388,7 +389,11 @@ void StateApplyPending() {
         if (!ok) {
             break;
         }
+        if (!save) {
+            loaded = true;
+        }
     }
+    return loaded;
 }
 
 // The state round-trip: save at --state-frame's frame, and load at the frame 180 ticks later (or at
@@ -634,8 +639,8 @@ int Run(int argc, const char **argv) {
 
 } // namespace
 
-void GameStateApplyPending() {
-    StateApplyPending();
+bool GameStateApplyPending() {
+    return StateApplyPending();
 }
 
 PORT_OVERRIDE int main(int argc, const char **argv, const char **envp) {

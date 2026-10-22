@@ -798,6 +798,27 @@ bool GameScreenshotWithFps(std::vector<std::uint8_t> &rgba, std::uint32_t &width
            gfx::ReadbackFrame(rgba, width, height);
 }
 
+// A boot load: after initialize_data and SndInit, skip the attract movie, title init and the
+// loading-screen holds, and tick the restored mode.
+bool StartFromState() {
+    if (!GameStateApplyPending()) {
+        return false;
+    }
+    LoadOverlay(mode);
+    MGSetRenderInfo(800.0f, 10.0f, 65535.0f);
+    LoadDrawEnv();
+    GamePad.StopVibration();
+    GamePad.KeyLock(0);
+    InputSetMenuNavigation(mode == GAME_MODE_MENU || mode == GAME_MODE_LOADER);
+    InputSetDeveloperMenu(mode == GAME_MODE_MENU);
+    GameOptionsApply(ConfigGet().options);
+    ClockSetIdleHook(nullptr);
+    MGInitVSyncCallBack(PlayTimeCount);
+    ClockSyncV();
+    MGPortCutInterpolation();
+    return true;
+}
+
 int RunGame(int argc, char **argv) {
     // mwInit is not called: the host has run every static constructor. init_all's IOP boot, CD
     // and file-system resets, DevInit's DMA reset and the DMA channel handles have no host
@@ -841,6 +862,9 @@ int RunGame(int argc, char **argv) {
     for (int tick = 0; tick < kWarmUpTicks && !g_jump.set; ++tick) {
         ClockSyncV();
         GamePad.UpDate();
+        if (GameStateHasPending()) {
+            break;
+        }
     }
     if (DebugMode && !g_jump.set) {
         std::fprintf(stderr, "debug mode on\n");
@@ -880,50 +904,60 @@ int RunGame(int argc, char **argv) {
         }
         InitReadBG();
         SndInit();
-
-        if (!DebugMode && mode == GAME_MODE_MENU) {
-            MapNo = 801;
-            mode = GAME_MODE_RUSH_MOVIE;
-        }
-
-        LoadOverlay(mode);
-        MGSetRenderInfo(800.0f, 10.0f, 65535.0f);
-        switch (mode) {
-            case GAME_MODE_LOADER:
-            case GAME_MODE_MENU:
-            case GAME_MODE_MEMORY_CHECK:
-            case GAME_MODE_LANGUAGE:
-                MapNo = -1;
-                OldMapNo = -1;
-                break;
-        }
-        LoadDrawEnv();
-
-        if (mode != GAME_MODE_UNUSED_12 && StartEventNo < 0) {
-            init_now_loading(MapNo);
-        }
-        GamePad.StopVibration();
-        if (DebugMode) {
-            LoadSystemMessage();
-        }
-
-        // A save loaded since the last mode brought its own options.
-        GameOptionsApply(ConfigGet().options);
-        bool event_start = StartEventNo >= 0;
-        ModeInit(title_ran, exist_data, skip_title);
-
-        NextMapNo = -1;
-        // check_now_loading pumps the clock while the loading screen runs.
-        while (check_now_loading() == 0) {
-        }
-
-        MGInitVSyncCallBack(PlayTimeCount);
-        LoadDrawEnv();
         ClockSyncV();
-        MGPortCutInterpolation();
-        *reinterpret_cast<s32 *>(reinterpret_cast<char *>(SaveData) + kSaveMapNoOffset) = MapNo;
-        if (g_autosave && mode == GAME_MODE_EDIT && !event_start && !SaveSlotWriteAutosave()) {
-            std::fprintf(stderr, "autosave: could not write %s\n", PathsDisplay(SaveSlotPath(kSaveSlotAutosave)).c_str());
+
+        bool restored = StartFromState();
+        if (!restored) {
+            if (!DebugMode && mode == GAME_MODE_MENU) {
+                MapNo = 801;
+                mode = GAME_MODE_RUSH_MOVIE;
+            }
+
+            LoadOverlay(mode);
+            MGSetRenderInfo(800.0f, 10.0f, 65535.0f);
+            switch (mode) {
+                case GAME_MODE_LOADER:
+                case GAME_MODE_MENU:
+                case GAME_MODE_MEMORY_CHECK:
+                case GAME_MODE_LANGUAGE:
+                    MapNo = -1;
+                    OldMapNo = -1;
+                    break;
+            }
+            LoadDrawEnv();
+
+            if (mode != GAME_MODE_UNUSED_12 && StartEventNo < 0) {
+                init_now_loading(MapNo);
+            }
+            GamePad.StopVibration();
+            if (DebugMode) {
+                LoadSystemMessage();
+            }
+
+            // A save loaded since the last mode brought its own options.
+            GameOptionsApply(ConfigGet().options);
+            bool event_start = StartEventNo >= 0;
+            ModeInit(title_ran, exist_data, skip_title);
+
+            NextMapNo = -1;
+            // check_now_loading pumps the clock while the loading screen runs.
+            while (check_now_loading() == 0) {
+                if (GameStateHasPending()) {
+                    break;
+                }
+            }
+            restored = StartFromState();
+            if (!restored) {
+                MGInitVSyncCallBack(PlayTimeCount);
+                LoadDrawEnv();
+                ClockSyncV();
+                MGPortCutInterpolation();
+                *reinterpret_cast<s32 *>(reinterpret_cast<char *>(SaveData) + kSaveMapNoOffset) = MapNo;
+                if (g_autosave && mode == GAME_MODE_EDIT && !event_start && !SaveSlotWriteAutosave()) {
+                    std::fprintf(stderr, "autosave: could not write %s\n",
+                                 PathsDisplay(SaveSlotPath(kSaveSlotAutosave)).c_str());
+                }
+            }
         }
 
         int result;
