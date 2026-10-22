@@ -19,6 +19,7 @@ WRITABLE = (".bss", ".data")
 
 def parse(lines):
     ranges = []
+    others = []
     lowest = None
     highest = 0
     for line in lines:
@@ -42,30 +43,45 @@ def parse(lines):
             continue
         section = out[marker + 2:-1]
         path = out[:marker].replace("\\", "/")
-        if section not in WRITABLE:
+        # -fdata-sections gives every global its own input section (.bss.rogoY3, .data._ZN...), so
+        # the prefixes are what count. .data.rel.ro and its `.local` variant are made read only
+        # after relocation and never rewritten, so they are not part of a state.
+        writable = section.startswith(".bss") or (section.startswith(".data") and not section.startswith(".data.rel.ro"))
+        if not writable:
             continue
         # The game's own objects: the ps2 sources CMake compiles as dc_ps2, less the Kazarov sce
-        # units compiled into the same library, whose state belongs to the host session.
+        # units compiled into the same library, whose state belongs to the host session. The host's
+        # other globals (this module's, the renderer's, the Rust crate's) are interleaved between
+        # the game's by the linker, so the table must carry the game's ranges exactly and never a
+        # span that covers a gap.
         if ("/dc_ps2.dir/" not in path or "/kazarov/" in path) and "/ps2/src/" not in path:
-            continue
-        ranges.append((vma, size))
+            others.append((vma, size))
+        else:
+            ranges.append((vma, size))
     if lowest is None:
         raise SystemExit("game_ranges: no sections in the map")
-    return lowest, max(highest - lowest, 1), ranges
+    return lowest, max(highest - lowest, 1), ranges, others
 
 
 def main():
     if len(sys.argv) != 3:
         raise SystemExit("usage: game_ranges.py <link map> <output table>")
     with open(sys.argv[1], "r", errors="replace") as file:
-        lowest, image_size, ranges = parse(file)
+        lowest, image_size, ranges, others = parse(file)
     merged = []
     for start, size in sorted(ranges):
         offset = start - lowest
-        if merged and offset <= merged[-1][0] + merged[-1][1]:
-            merged[-1][1] = max(merged[-1][1], offset + size)
+        if merged and offset == merged[-1][0] + merged[-1][1]:
+            # Touching: one range. A gap between the game's globals holds the host's, which a state
+            # must leave alone.
+            merged[-1][1] += size
         else:
             merged.append([offset, size])
+    for start, size in others:
+        offset = start - lowest
+        for begin, span in merged:
+            if offset < begin + span and begin < offset + size:
+                raise SystemExit("game_ranges: the game's ranges cover a host global at %x" % (start,))
     with open(sys.argv[2], "wb") as file:
         file.write(MAGIC)
         file.write(struct.pack("<I", VERSION))
