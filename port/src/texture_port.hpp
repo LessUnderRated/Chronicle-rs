@@ -87,6 +87,10 @@ void PortReleaseKey(unsigned key);
 void PortReleaseOwner(PortTextureOwner owner);
 bool PortKeyLive(unsigned key);
 
+// After a state restore: re-decodes and re-registers every texture the manager holds, and points
+// the restored TEX0s at the new keys.
+void TextureRebuild();
+
 // The GS local-to-local transfer MGMoveImage describes, in texels of the two images: TBP0/PSM of
 // each side. Images copy on the renderer; palettes copy their CPU shadow in CLUT image positions
 // and re-upload. False if either side is unknown or the two cannot be copied between.

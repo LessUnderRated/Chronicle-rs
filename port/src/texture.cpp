@@ -448,6 +448,9 @@ PORT_OVERRIDE void CTextureManager::EnterFixTextureZ(u_char *buffer) {
     tex->height = height;
     tex->bpp = 1;
     tex->block = 73;
+    // Where the picture and its palette live, so a state restore can re-decode them.
+    tex->image[0] = (u_int *) image;
+    tex->clut = (u_int *) clut;
 
     const u_char      *levels[1] = {image};
     PortDecodedTexture decoded;
@@ -460,6 +463,51 @@ PORT_OVERRIDE void CTextureManager::EnterFixTextureZ(u_char *buffer) {
         tbp = PortCreateTexture(decoded, PortTextureOwner::Manager, &cbp);
     }
     tex->tex0 = SCE_GS_SET_TEX0(tbp, 10, kPsmT8H, 10, 8, 1, 0, cbp, 0, 0, 0, 1);
+}
+
+// After a state restore the manager's own memory says every texture is entered, but this session's
+// registry holds none of them: the game believes it needs no re-entry, so nothing would draw. This
+// re-decodes and re-registers what the manager has, and points the restored TEX0s at the new keys —
+// they were right about everything else. Pixels are game memory the restore brought back.
+void TextureRebuild() {
+    PortReleaseOwner(PortTextureOwner::Manager);
+    for (int i = 0; i < 196; i++) {
+        CTexture &tex = TexManager.textures[i];
+        if (tex.name[0] == 0) {
+            continue;
+        }
+        if (i == 0) {
+            // "work", the frame-copy area the water samples: the fresh session's Initialize made
+            // the named target already, and the restored TEX0 names its key wrongly.
+            unsigned tbp = PortRegisterNamedTarget("work", 640, SCREEN_HALF_HEIGHT, true, PortTextureOwner::Manager);
+            tex.tex0 = SCE_GS_SET_TEX0(tbp, 10, 0, 10, 8, 1, 0, 0, 0, 0, 0, 0);
+            continue;
+        }
+        bool    indexed = tex.bpp < 2;
+        unsigned cbp = 0;
+        unsigned tbp;
+        if (tex.image[0] == nullptr) {
+            tbp = PortCreatePlaceholder(tex.name, tex.width, tex.height, tex.bpp, PortTextureOwner::Manager, &cbp);
+        } else {
+            const u_char      *levels[3] = {(u_char *) tex.image[0], (u_char *) tex.image[1], (u_char *) tex.image[2]};
+            PortDecodedTexture decoded;
+            if (!PortDecodeTexture(tex.bpp, tex.width, tex.height, levels, tex.image[1] != nullptr ? 3 : 1,
+                                   (u_char *) tex.clut, tex.bpp == 0 ? 16 : tex.bpp == 1 ? 256 : 0,
+                                   indexed && tex.swizzled != 0, decoded)) {
+                std::fprintf(stderr, "texture rebuild: %s would not decode\n", tex.name);
+                continue;
+            }
+            LocalizeTexture(tex.name, decoded);
+            caption::PreparePainted(tex.name, decoded);
+            MakeGroundPeriodic(tex.name, decoded);
+            DumpTexture(tex.name, decoded);
+            tbp = PortCreateTexture(decoded, PortTextureOwner::Manager, &cbp);
+        }
+        tex.tex0 = (tex.tex0 & ~(u_long) 0x3FFF) | tbp;
+        if (indexed) {
+            tex.tex0 = (tex.tex0 & ~((u_long) 0x3FFF << 37)) | ((u_long) cbp << 37);
+        }
+    }
 }
 
 // Native textures occupy independent storage, so simulated PS2 VRAM overlap does not overwrite
