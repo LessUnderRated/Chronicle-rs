@@ -257,6 +257,19 @@ if(ANDROID)
     set_target_properties(darkcloud PROPERTIES OUTPUT_NAME main)
     dc_link_game(darkcloud)
     target_link_libraries(darkcloud PRIVATE chronicle_android android log)
+    # The state layout table (scripts/port/game_ranges.py): which of the image's writable globals
+    # are the game's, written as an APK asset from the link map, so a save state restores the game's
+    # globals and leaves the host session's alone.
+    target_link_options(darkcloud PRIVATE -Wl,-Map=${CMAKE_BINARY_DIR}/game_globals.map)
+    find_package(Python3 COMPONENTS Interpreter)
+    if(Python3_FOUND)
+        set(STATE_TABLE ${CMAKE_SOURCE_DIR}/android/app/src/main/assets/states_layout.bin)
+        add_custom_command(TARGET darkcloud POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_SOURCE_DIR}/android/app/src/main/assets
+            COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/scripts/port/game_ranges.py
+                    ${CMAKE_BINARY_DIR}/game_globals.map ${STATE_TABLE}
+            VERBATIM)
+    endif()
 else()
     add_executable(darkcloud ${PORT_DIR}/main.cpp)
     set_target_properties(darkcloud PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})

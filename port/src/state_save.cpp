@@ -1,5 +1,7 @@
 #include "state_save.hpp"
 
+#include <SDL3/SDL.h>
+
 #include <algorithm>
 #include <cerrno>
 #include <cstdio>
@@ -8,8 +10,6 @@
 
 #include "platform/arena.hpp"
 #include "platform/memory.hpp"
-
-namespace fs = std::filesystem;
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -20,31 +20,134 @@ namespace fs = std::filesystem;
 #include <link.h>
 #endif
 
+namespace fs = std::filesystem;
+
 namespace {
 
 constexpr char kMagic[4] = {'D', 'C', 'S', 'T'};
-constexpr std::uint32_t kVersion = 1;
+constexpr std::uint32_t kVersion = 2;
 
-// A writable range of the running image: the game's globals and the port's own statics together.
+std::uint64_t Fingerprint(const unsigned char *bytes, std::size_t size) {
+    std::uint64_t hash = 0xcbf29ce484222325;
+    for (std::size_t i = 0; i < size; i++) {
+        hash = (hash ^ bytes[i]) * 0x100000001b3;
+    }
+    return hash;
+}
+
+// A writable range of the running image, as the state carries it: an offset from the image's base.
 struct StateSegment {
-    const void *address = nullptr;
-    std::size_t size = 0;
+    std::uint64_t offset = 0;
+    std::uint64_t size = 0;
 };
 
-// The ranges actually writable now, clipped from the module's writable program headers: the
-// dynamic linker keeps a part of the first one read only (RELRO), and only /proc's map says which
-// part. Ordering follows the file, so a state restores in the same layout it captured.
-std::vector<StateSegment> WritableSegmentsFromMaps(std::uintptr_t from, std::uintptr_t to) {
-    std::vector<StateSegment> segments;
-    std::FILE                *maps = std::fopen("/proc/self/maps", "r");
-    if (maps == nullptr) {
-        return segments;
+// The running module: its base (the runtime address the layout table's offsets measure from) and
+// its span. On POSIX the base is the load bias plus the lowest program header, which is the same
+// point the link map measured from; on Windows the module's own base.
+struct ModuleInfo {
+    std::uint64_t base = 0;
+    std::uint64_t span = 0;
+};
+
+#ifndef _WIN32
+struct ElfScan {
+    const void *self = nullptr;
+    std::uint64_t base = 0;
+    std::uint64_t span = 0;
+};
+
+int CollectElfModule(dl_phdr_info *info, std::size_t, void *out) {
+    auto *scan = static_cast<ElfScan *>(out);
+    for (int i = 0; i < info->dlpi_phnum; i++) {
+        const ElfW(Phdr) &phdr = info->dlpi_phdr[i];
+        if (phdr.p_type != PT_LOAD) {
+            continue;
+        }
+        std::uintptr_t start = static_cast<std::uintptr_t>(info->dlpi_addr) + phdr.p_vaddr;
+        std::uintptr_t end = start + phdr.p_memsz;
+        if (reinterpret_cast<std::uintptr_t>(scan->self) < start || reinterpret_cast<std::uintptr_t>(scan->self) >= end) {
+            continue;
+        }
+        for (int j = 0; j < info->dlpi_phnum; j++) {
+            if (info->dlpi_phdr[j].p_type != PT_LOAD) {
+                continue;
+            }
+            std::uint64_t load_start = static_cast<std::uint64_t>(info->dlpi_addr) + info->dlpi_phdr[j].p_vaddr;
+            scan->span = std::max<std::uint64_t>(scan->span, load_start + info->dlpi_phdr[j].p_memsz - scan->base);
+            scan->base = std::min<uint64_t>(scan->base == 0 ? load_start : scan->base, load_start);
+        }
+        return 1;
     }
+    return 0;
+}
+#endif
+
+// The whole writable image, for the table-less fallback: each writable program header (or PE
+// section) as an offset from the module base. On POSIX the kernel's map clips what the linker made
+// read only (RELRO), which the restore must not write to.
+std::vector<StateSegment> WritableSegments(const ModuleInfo &module) {
+    std::vector<StateSegment> headers;
+#ifdef _WIN32
+    HMODULE handle = nullptr;
+    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                            reinterpret_cast<LPCWSTR>(&WritableSegments), &handle)) {
+        return headers;
+    }
+    auto *dos = static_cast<IMAGE_DOS_HEADER *>(static_cast<void *>(handle));
+    auto *nt = reinterpret_cast<IMAGE_NT_HEADERS *>(reinterpret_cast<std::uint8_t *>(handle) + dos->e_lfanew);
+    auto *section = IMAGE_FIRST_SECTION(nt);
+    for (unsigned i = 0; i < nt->FileHeader.NumberOfSections; i++, section++) {
+        if ((section->Characteristics & IMAGE_SCN_MEM_WRITE) == 0 || section->Misc.VirtualSize == 0) {
+            continue;
+        }
+        headers.push_back({section->VirtualAddress, section->Misc.VirtualSize});
+    }
+    return headers;
+#else
+    struct Scan {
+        const void               *self;
+        std::vector<StateSegment> *segments;
+    };
+    Scan scan = {reinterpret_cast<const void *>(&GameStateLoad), &headers};
+    dl_iterate_phdr(
+        [](dl_phdr_info *info, std::size_t, void *out) -> int {
+            auto *scan = static_cast<Scan *>(out);
+            for (int i = 0; i < info->dlpi_phnum; i++) {
+                const ElfW(Phdr) &phdr = info->dlpi_phdr[i];
+                if (phdr.p_type != PT_LOAD || (phdr.p_flags & PF_W) == 0) {
+                    continue;
+                }
+                std::uintptr_t start = static_cast<std::uintptr_t>(info->dlpi_addr) + phdr.p_vaddr;
+                std::uintptr_t end = start + phdr.p_memsz;
+                if (reinterpret_cast<std::uintptr_t>(scan->self) < start ||
+                    reinterpret_cast<std::uintptr_t>(scan->self) >= end) {
+                    continue;
+                }
+                scan->segments->push_back({start - static_cast<std::uintptr_t>(info->dlpi_addr), phdr.p_memsz});
+                return 1;
+            }
+            return 0;
+        },
+        &scan);
+    if (headers.empty() || headers.front().size == 0) {
+        return headers;
+    }
+    // The kernel's map, for the parts of those ranges that are writable now.
+    std::uint64_t from = headers.front().offset;
+    std::uint64_t to = 0;
+    for (const StateSegment &header : headers) {
+        to = std::max(to, header.offset + header.size);
+    }
+    std::FILE *maps = std::fopen("/proc/self/maps", "r");
+    if (maps == nullptr) {
+        return headers;
+    }
+    std::vector<StateSegment> clipped;
     char line[512];
     while (std::fgets(line, sizeof line, maps) != nullptr) {
-        std::uintptr_t start = 0;
-        std::uintptr_t end = 0;
-        char           perms[8] = {};
+        std::uint64_t start = 0;
+        std::uint64_t end = 0;
+        char perms[8] = {};
         if (std::sscanf(line, "%lx-%lx %7s", &start, &end, perms) != 3) {
             continue;
         }
@@ -53,152 +156,86 @@ std::vector<StateSegment> WritableSegmentsFromMaps(std::uintptr_t from, std::uin
         }
         start = std::max(start, from);
         end = std::min(end, to);
-        segments.push_back({reinterpret_cast<const void *>(start), end - start});
+        for (const StateSegment &header : headers) {
+            std::uint64_t header_start = header.offset;
+            std::uint64_t header_end = header.offset + header.size;
+            if (start < header_end && header_start < end) {
+                clipped.push_back({std::max(start, header_start) - from, std::min(end, header_end) - std::max(start, header_start)});
+            }
+        }
     }
     std::fclose(maps);
-    return segments;
-}
-
-#ifndef _WIN32
-// This module's writable program headers: the ranges the image owns, before the linker's
-// protections clip them.
-struct ElfScan {
-    std::uintptr_t self = 0;
-    std::vector<StateSegment> *segments = nullptr;
-};
-
-int CollectElfSegments(dl_phdr_info *info, std::size_t, void *out) {
-    auto *scan = static_cast<ElfScan *>(out);
-    for (int i = 0; i < info->dlpi_phnum; i++) {
-        const ElfW(Phdr) &phdr = info->dlpi_phdr[i];
-        if (phdr.p_type != PT_LOAD || (phdr.p_flags & PF_W) == 0) {
-            continue;
-        }
-        std::uintptr_t start = info->dlpi_addr + phdr.p_vaddr;
-        std::uintptr_t end = start + phdr.p_memsz;
-        if (scan->self < start || scan->self >= end) {
-            continue;
-        }
-        scan->segments->push_back({reinterpret_cast<const void *>(start), phdr.p_memsz});
-        return 1;
-    }
-    return 0;
-}
+    return clipped.empty() ? headers : clipped;
 #endif
+}
 
-// The image's writable ranges. Anything else that lives in them (the host's statics, the
-// renderer's globals) is captured and restored wholesale: the save and the load both run between
-// ticks, where the host holds still, and the handles it keeps name objects of this very process.
-std::vector<StateSegment> WritableSegments() {
-    std::vector<StateSegment> headers;
+ModuleInfo Module() {
 #ifdef _WIN32
-    HMODULE module = nullptr;
+    HMODULE handle = nullptr;
     if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                            reinterpret_cast<LPCWSTR>(&WritableSegments), &module)) {
-        return headers;
-    }
-    auto *dos = static_cast<IMAGE_DOS_HEADER *>(static_cast<void *>(module));
-    auto *nt = reinterpret_cast<IMAGE_NT_HEADERS *>(reinterpret_cast<std::uint8_t *>(module) + dos->e_lfanew);
-    auto *section = IMAGE_FIRST_SECTION(nt);
-    std::uintptr_t base = reinterpret_cast<std::uintptr_t>(module);
-    for (unsigned i = 0; i < nt->FileHeader.NumberOfSections; i++, section++) {
-        if ((section->Characteristics & IMAGE_SCN_MEM_WRITE) == 0 || section->Misc.VirtualSize == 0) {
-            continue;
-        }
-        headers.push_back({reinterpret_cast<const void *>(base + section->VirtualAddress), section->Misc.VirtualSize});
-    }
-#else
-    // The module this file is linked into: on Android libmain.so, here the test or game executable.
-    ElfScan                   scan = {reinterpret_cast<std::uintptr_t>(&WritableSegments), &headers};
-    dl_iterate_phdr(CollectElfSegments, &scan);
-    return headers;
-#endif
-}
-
-#ifndef _WIN32
-// The parts of those ranges the kernel reports writable now, RELRO aside. Each map range is
-// clipped against every header, since a module can carry more than one writable load.
-std::vector<StateSegment> WritableSegmentsNow(const std::vector<StateSegment> &headers) {
-    if (headers.empty()) {
+                            reinterpret_cast<LPCWSTR>(&Module), &handle)) {
         return {};
     }
-    std::uintptr_t from = reinterpret_cast<std::uintptr_t>(headers.front().address);
-    std::uintptr_t to = from;
-    for (const StateSegment &header : headers) {
-        std::uintptr_t start = reinterpret_cast<std::uintptr_t>(header.address);
-        from = std::min(from, start);
-        to = std::max(to, start + header.size);
-    }
-    std::vector<StateSegment> clipped = WritableSegmentsFromMaps(from, to);
-    if (clipped.empty()) {
-        // No /proc here: take the headers whole and let a write fault speak for itself.
-        return headers;
-    }
-    std::vector<StateSegment> out;
-    for (const StateSegment &range : clipped) {
-        std::uintptr_t start = reinterpret_cast<std::uintptr_t>(range.address);
-        std::uintptr_t end = start + range.size;
-        for (const StateSegment &header : headers) {
-            std::uintptr_t header_start = reinterpret_cast<std::uintptr_t>(header.address);
-            std::uintptr_t header_end = header_start + header.size;
-            if (start < header_end && header_start < end) {
-                out.push_back({reinterpret_cast<const void *>(std::max(start, header_start)),
-                               std::min(end, header_end) - std::max(start, header_start)});
-            }
-        }
-    }
-    return out;
-}
-#endif
-
-std::vector<StateSegment> Segments() {
-#ifdef _WIN32
-    return WritableSegments();
+    auto *dos = static_cast<IMAGE_DOS_HEADER *>(static_cast<void *>(handle));
+    auto *nt = reinterpret_cast<IMAGE_NT_HEADERS *>(reinterpret_cast<std::uint8_t *>(handle) + dos->e_lfanew);
+    return {reinterpret_cast<std::uint64_t>(handle), nt->OptionalHeader.SizeOfImage};
 #else
-    return WritableSegmentsNow(WritableSegments());
+    ElfScan scan;
+    scan.self = reinterpret_cast<const void *>(&Module);
+    dl_iterate_phdr(CollectElfModule, &scan);
+    return {scan.base, scan.span};
 #endif
 }
 
-// The headers whole, whatever the linker protects inside them: a state is only ever loaded in the
-// session that took it, which the check is for.
-bool SameSession(const std::vector<StateSegment> &recorded) {
-    std::vector<StateSegment> headers;
-#ifdef _WIN32
-    HMODULE module = nullptr;
-    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                            reinterpret_cast<LPCWSTR>(&SameSession), &module)) {
-        return false;
-    }
-    auto *dos = static_cast<IMAGE_DOS_HEADER *>(static_cast<void *>(module));
-    auto *nt = reinterpret_cast<IMAGE_NT_HEADERS *>(reinterpret_cast<std::uint8_t *>(module) + dos->e_lfanew);
-    auto *section = IMAGE_FIRST_SECTION(nt);
-    std::uintptr_t base = reinterpret_cast<std::uintptr_t>(module);
-    for (unsigned i = 0; i < nt->FileHeader.NumberOfSections; i++, section++) {
-        if ((section->Characteristics & IMAGE_SCN_MEM_WRITE) == 0 || section->Misc.VirtualSize == 0) {
-            continue;
-        }
-        headers.push_back({reinterpret_cast<const void *>(base + section->VirtualAddress), section->Misc.VirtualSize});
-    }
-#else
-    ElfScan scan = {reinterpret_cast<std::uintptr_t>(&SameSession), &headers};
-    dl_iterate_phdr(CollectElfSegments, &scan);
-#endif
-    for (const StateSegment &segment : recorded) {
-        std::uintptr_t start = reinterpret_cast<std::uintptr_t>(segment.address);
-        std::uintptr_t end = start + segment.size;
-        bool inside = false;
-        for (const StateSegment &header : headers) {
-            std::uintptr_t header_start = reinterpret_cast<std::uintptr_t>(header.address);
-            if (start >= header_start && end <= header_start + header.size) {
-                inside = true;
-                break;
-            }
-        }
-        if (!inside) {
-            return false;
+// The build's layout table: which offsets from the image base hold the game's own globals. It ships
+// beside the executable (PC) and in the APK's assets (Android), both of which SDL resolves.
+struct LayoutTable {
+    std::uint64_t fingerprint = 0;
+    std::uint64_t image_size = 0;
+    std::vector<StateSegment> game;
+};
+
+LayoutTable ReadLayout() {
+    LayoutTable table;
+    SDL_IOStream *io = SDL_IOFromFile("states_layout.bin", "rb");
+    if (io == nullptr) {
+        // Not in the assets: beside the executable, where a PC build writes it. SDL owns the path.
+        const char *base = SDL_GetBasePath();
+        if (base != nullptr) {
+            std::string path = std::string(base) + "states_layout.bin";
+            io = SDL_IOFromFile(path.c_str(), "rb");
         }
     }
-    return true;
+    if (io == nullptr) {
+        return table;
+    }
+    size_t size = 0;
+    unsigned char *bytes = static_cast<unsigned char *>(SDL_LoadFile_IO(io, &size, 0));
+    SDL_CloseIO(io);
+    if (bytes == nullptr || size < 24 || std::memcmp(bytes, "DCLR", 4) != 0) {
+        SDL_free(bytes);
+        return table;
+    }
+    table.fingerprint = Fingerprint(bytes, size);
+    std::uint64_t lowest = 0;
+    std::memcpy(&lowest, bytes + 8, 8);
+    std::memcpy(&table.image_size, bytes + 16, 8);
+    std::uint32_t count = 0;
+    std::memcpy(&count, bytes + 24, 4);
+    if (size < 28 + static_cast<size_t>(count) * 16) {
+        SDL_free(bytes);
+        table.fingerprint = 0;
+        return table;
+    }
+    for (std::uint32_t i = 0; i < count; i++) {
+        std::uint64_t offset = 0;
+        std::uint64_t range_size = 0;
+        std::memcpy(&offset, bytes + 28 + i * 16, 8);
+        std::memcpy(&range_size, bytes + 28 + i * 16 + 8, 8);
+        table.game.push_back({offset, range_size});
+    }
+    SDL_free(bytes);
+    return table;
 }
 
 void Put(std::FILE *file, const void *bytes, std::size_t size, std::string *error) {
@@ -219,12 +256,43 @@ bool GetValue(std::FILE *file, std::uint64_t *value) {
     return Get(file, value, sizeof *value);
 }
 
+// Shifts every 8-byte value that named the saved image by the base difference: a vtable pointer, a
+// static string, a function pointer. Nothing else in the game's memory lands in the image's range
+// (the game's numbers are small, its doubles far from a code address), so the scan is exact.
+void Rebase(unsigned char *bytes, std::size_t size, std::uint64_t old_base, std::uint64_t new_base, std::uint64_t image_size) {
+    std::uint64_t delta = new_base - old_base;
+    for (std::size_t i = 0; i + 8 <= size; i += 8) {
+        std::uint64_t value = 0;
+        std::memcpy(&value, bytes + i, 8);
+        if (value >= old_base && value - old_base < image_size) {
+            value += delta;
+            std::memcpy(bytes + i, &value, 8);
+        }
+    }
+}
+
 } // namespace
 
 bool GameStateSave(const std::filesystem::path &path, std::string *error) {
-    std::vector<StateSegment> segments = Segments();
-    if (segments.empty()) {
-        *error = "no writable image segments found";
+    ModuleInfo module = Module();
+    if (module.span == 0) {
+        *error = "no code image found";
+        return false;
+    }
+    if (ArenaRegionBase() == nullptr) {
+        *error = "no fixed arena reservation, so a state could not be restored";
+        return false;
+    }
+    LayoutTable layout = ReadLayout();
+    std::vector<StateSegment> chunks;
+    if (layout.fingerprint != 0) {
+        chunks = layout.game;
+    } else {
+        // No table: the whole writable image, good for this session only.
+        chunks = WritableSegments(module);
+    }
+    if (chunks.empty()) {
+        *error = "no writable image ranges found";
         return false;
     }
     std::FILE *file = std::fopen(path.string().c_str(), "wb");
@@ -235,21 +303,33 @@ bool GameStateSave(const std::filesystem::path &path, std::string *error) {
     error->clear();
     Put(file, kMagic, sizeof kMagic, error);
     PutValue(file, kVersion, error);
-    PutValue(file, segments.size(), error);
-    for (const StateSegment &segment : segments) {
-        PutValue(file, reinterpret_cast<std::uintptr_t>(segment.address), error);
-        PutValue(file, segment.size, error);
-        Put(file, segment.address, segment.size, error);
+    PutValue(file, layout.fingerprint, error);
+    PutValue(file, module.base, error);
+    PutValue(file, layout.fingerprint != 0 ? layout.image_size : module.span, error);
+    PutValue(file, ArenaRegionBase() != nullptr ? reinterpret_cast<std::uint64_t>(ArenaRegionBase()) : 0, error);
+    PutValue(file, chunks.size(), error);
+    std::vector<std::vector<unsigned char>> contents;
+    for (const StateSegment &chunk : chunks) {
+        PutValue(file, chunk.offset, error);
+        PutValue(file, chunk.size, error);
+        std::vector<unsigned char> bytes(chunk.size);
+        std::memcpy(bytes.data(), reinterpret_cast<const void *>(module.base + chunk.offset), chunk.size);
+        Put(file, bytes.data(), bytes.size(), error);
+        contents.push_back(std::move(bytes));
+        if (!error->empty()) {
+            break;
+        }
     }
     std::uint64_t blocks = ArenaBlockCount();
     PutValue(file, blocks, error);
     for (std::uint64_t i = 0; i < blocks && error->empty(); i++) {
         ArenaBlockInfo block = ArenaBlockInfoAt(static_cast<std::size_t>(i));
-        PutValue(file, reinterpret_cast<std::uintptr_t>(block.owner), error);
-        PutValue(file, reinterpret_cast<std::uintptr_t>(block.map), error);
-        PutValue(file, block.map_size, error);
+        std::uint64_t owner_offset = reinterpret_cast<std::uintptr_t>(block.owner) - module.base;
+        PutValue(file, owner_offset, error);
+        PutValue(file, block.offset, error);
+        PutValue(file, block.usable, error);
         PutValue(file, block.lead, error);
-        Put(file, block.map, block.map_size - ArenaMemoryPageSize(), error);
+        Put(file, ArenaRegionBase() + block.offset, block.usable, error);
     }
     bool ok = std::fflush(file) == 0 && error->empty();
     if (std::fclose(file) != 0) {
@@ -262,64 +342,89 @@ bool GameStateSave(const std::filesystem::path &path, std::string *error) {
 }
 
 bool GameStateLoad(const std::filesystem::path &path, std::string *error) {
+    ModuleInfo module = Module();
     std::FILE *file = std::fopen(path.string().c_str(), "rb");
     if (file == nullptr) {
         *error = std::strerror(errno);
         return false;
     }
     error->clear();
-    std::vector<StateSegment> segments;
-    std::uint64_t             version = 0;
-    char                      magic[4] = {};
-    bool                      ok = Get(file, magic, sizeof magic) && std::memcmp(magic, kMagic, sizeof magic) == 0 &&
-              GetValue(file, &version) && version == kVersion;
+    char magic[4] = {};
+    std::uint64_t version = 0;
+    std::uint64_t fingerprint = 0;
+    std::uint64_t old_base = 0;
+    std::uint64_t image_size = 0;
+    std::uint64_t old_region = 0;
+    bool ok = Get(file, magic, sizeof magic) && std::memcmp(magic, kMagic, sizeof magic) == 0 &&
+              GetValue(file, &version) && version == kVersion && GetValue(file, &fingerprint) &&
+              GetValue(file, &old_base) && GetValue(file, &image_size) && GetValue(file, &old_region);
+    if (ok && ArenaRegionBase() == nullptr) {
+        std::fclose(file);
+        *error = "no fixed arena reservation, so a state cannot be restored";
+        return false;
+    }
+    if (ok && fingerprint != 0) {
+        // The table the state was saved with must be this build's, and the reservation must have
+        // landed where it did.
+        LayoutTable layout = ReadLayout();
+        if (layout.fingerprint != fingerprint) {
+            std::fclose(file);
+            *error = "the state was saved by a different build of the game";
+            return false;
+        }
+        if (old_region != reinterpret_cast<std::uint64_t>(ArenaRegionBase())) {
+            std::fclose(file);
+            *error = "the arena reservation landed elsewhere in this session";
+            return false;
+        }
+    } else if (ok) {
+        // Table-less: the whole image was carried, which is only meaningful where it sat.
+        if (old_base != module.base || old_region != reinterpret_cast<std::uint64_t>(ArenaRegionBase())) {
+            std::fclose(file);
+            *error = "the state was saved in another session";
+            return false;
+        }
+    }
     std::uint64_t count = 0;
     if (ok) {
         ok = GetValue(file, &count);
     }
+    std::vector<StateSegment> chunks;
     std::vector<std::vector<unsigned char>> contents;
     for (std::uint64_t i = 0; ok && i < count; i++) {
-        std::uint64_t address = 0;
+        std::uint64_t offset = 0;
         std::uint64_t size = 0;
-        ok = GetValue(file, &address) && GetValue(file, &size) && size < (1u << 31);
+        ok = GetValue(file, &offset) && GetValue(file, &size) && size < (std::uint64_t{1} << 31);
         if (!ok) {
             break;
         }
         contents.emplace_back(size);
-        StateSegment segment = {reinterpret_cast<const void *>(address), size};
+        StateSegment chunk = {offset, size};
         ok = Get(file, contents.back().data(), size);
-        segments.push_back(segment);
+        chunks.push_back(chunk);
     }
-    std::vector<std::vector<unsigned char>> block_contents;
-    std::uint64_t                           block_count = 0;
+    std::uint64_t block_count = 0;
     if (ok) {
         ok = GetValue(file, &block_count);
     }
     struct BlockRecord {
-        const void   *owner = nullptr;
-        unsigned char *map = nullptr;
-        std::size_t    map_size = 0;
-        std::size_t    lead = 0;
+        std::uint64_t owner_offset = 0;
+        std::uint64_t offset = 0;
+        std::uint64_t usable = 0;
+        std::uint64_t lead = 0;
     };
     std::vector<BlockRecord> blocks;
+    std::vector<std::vector<unsigned char>> block_contents;
     for (std::uint64_t i = 0; ok && i < block_count; i++) {
-        std::uint64_t owner = 0;
-        std::uint64_t map = 0;
-        std::uint64_t map_size = 0;
-        std::uint64_t lead = 0;
-        ok = GetValue(file, &owner) && GetValue(file, &map) && GetValue(file, &map_size) && GetValue(file, &lead);
+        BlockRecord block;
+        ok = GetValue(file, &block.owner_offset) && GetValue(file, &block.offset) && GetValue(file, &block.usable) &&
+             GetValue(file, &block.lead);
         if (!ok) {
             break;
         }
-        std::size_t page = ArenaMemoryPageSize();
-        if (map_size <= page || lead > map_size - page) {
-            ok = false;
-            break;
-        }
-        std::size_t usable = map_size - page;
-        block_contents.emplace_back(usable);
-        blocks.push_back({reinterpret_cast<const void *>(owner), reinterpret_cast<unsigned char *>(map), map_size, lead});
-        ok = Get(file, block_contents.back().data(), usable);
+        block_contents.emplace_back(block.usable);
+        blocks.push_back(block);
+        ok = Get(file, block_contents.back().data(), block.usable);
     }
     std::fclose(file);
     if (!ok) {
@@ -328,25 +433,26 @@ bool GameStateLoad(const std::filesystem::path &path, std::string *error) {
         }
         return false;
     }
-    if (!SameSession(segments)) {
-        *error = "the state was saved in another session";
-        return false;
-    }
 
-    // Blocks first (the image's globals point into them), then the other blocks zeroed, then the
-    // image's globals over what the game's logic reads.
+    // Blocks first — the globals point into them — then the other blocks zeroed, then the globals,
+    // with the pointers that named the saved image moved by the base difference.
     for (std::size_t i = 0; i < blocks.size(); i++) {
-        const BlockRecord &block = blocks[i];
-        ArenaBlockRestore(block.owner, block.map, block.map_size, block.lead, block_contents[i].data(),
-                          block_contents[i].size());
+        ArenaBlockRestore(reinterpret_cast<const void *>(module.base + blocks[i].owner_offset), blocks[i].offset,
+                          blocks[i].usable, blocks[i].lead, block_contents[i].data(), block_contents[i].size());
+        if (fingerprint != 0) {
+            Rebase(ArenaRegionBase() + blocks[i].offset, blocks[i].usable, old_base, module.base, image_size);
+        }
     }
     std::vector<const void *> keep;
     for (const BlockRecord &block : blocks) {
-        keep.push_back(block.owner);
+        keep.push_back(reinterpret_cast<const void *>(module.base + block.owner_offset));
     }
     ArenaZeroOtherBlocks(keep.data(), keep.size());
-    for (std::size_t i = 0; i < segments.size(); i++) {
-        std::memcpy(const_cast<void *>(segments[i].address), contents[i].data(), contents[i].size());
+    for (std::size_t i = 0; i < chunks.size(); i++) {
+        if (fingerprint != 0) {
+            Rebase(contents[i].data(), contents[i].size(), old_base, module.base, image_size);
+        }
+        std::memcpy(reinterpret_cast<void *>(module.base + chunks[i].offset), contents[i].data(), contents[i].size());
     }
     return true;
 }

@@ -253,25 +253,34 @@ Cloud save on it into the game's load screen (`memcard.rs`):
 
 ## Save states
 
-In progress, phase one landed. A save state has to hold everything the running game holds: its
-arenas, and the port's own state beside them (the textures and meshes on the GPU, the sound banks,
-the caches in the host's heap), which the game's memory points into. Restoring the game's memory
-alone would leave those pointers naming objects that no longer exist.
+Working, including across sessions. A state holds the game's arena blocks and the game's own
+globals, and a load puts them back:
 
-What is there now (`port/src/state_save.cpp`, Kazarov's `ArenaBlockRestore`): a state records the
-image's writable globals (.data and .bss, clipped to what the kernel reports writable) and every
-arena block, and a load puts the blocks back at their recorded addresses (unmapping a block the
-owner has since grown, zeroing every block the state does not hold) and writes the globals back,
-all between ticks with the audio output stopped. States are per session: they record raw
-addresses, and a load refuses one whose segments do not lie inside the running image. The app's
-menu carries Save state and Load state over three slots in the save folder's `states/`; the PC
-test hooks drive the same round trip: `--state-save FILE`, `--state-load FILE`, `--state-frame N`.
+- **Arenas** are carved from one reservation at a fixed address (the same candidates tried on every
+  launch, Kazarov's `ArenaRegionReserve`), so the game's pointers into them — whole and the 32-bit
+  truncations — keep their meaning across a restart. A restore zeroes every range the state does
+  not hold, the way retiring a block does, and re-closes each block's guard page.
+- **The game's globals** are recorded at offsets from the code image's base, from a layout table the
+  Android build generates out of the link map (`scripts/port/game_ranges.py`, written into the APK's
+  assets as `states_layout.bin`): the `.data`/`.bss` of the game's own objects, and nothing of the
+  host's. The image's base moves between launches (ASLR), so a load rewrites the 8-byte values that
+  named the saved image — vtable pointers, static strings, function pointers — by the base
+  difference. The state names the table's fingerprint, so a load refuses one saved by a different
+  build; and the game's truncated 32-bit image pointers (a character's cloth wind) are not rebased:
+  their reader widens against the running image and takes a null for no wind.
+- **The host's own globals** (renderer, texture registry, audio, this module) are not in the state:
+  they belong to the running session, and what they cache of the game the game rebuilds as it runs.
+  A first run after an update saves table-less states, which hold only that session.
 
-Still to come: restoring across sessions (rebase the recorded addresses onto where the new process
-laid things), and the audit of host state that outlives a load (textures re-uploaded only when the
-game touches them, sound banks, the texture registry), which today shows at worst as one frame of
-a stale image. Until the feature is finished the game saves where it always has, with the autosave
-on arriving in a town.
+The app's menu carries Save state and Load state over three slots in the save folder's `states/`;
+the result lands in `states/last.json` and the log. The PC CLI drives the same round trip:
+`--state-save FILE`, `--state-load FILE`, `--state-frame N`. Windows PC builds have no layout table
+(their linker map is a different format), so their states hold this session only.
+
+Still to come: an audit of host state that caches the game beyond what the game rebuilds (sound
+banks the mixer holds, a `std::` container hiding in a game global), which today shows at worst as
+a stale image for a frame or a silenced sound until it re-triggers. Until the feature is finished
+the game saves where it always has, with the autosave on arriving in a town.
 
 ## Where it stands
 
