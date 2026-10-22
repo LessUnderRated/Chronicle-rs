@@ -375,6 +375,7 @@ bool GameStateSave(const std::filesystem::path &path, std::string *error) {
         Put(file, visual->indices.data(), visual->indices.size() * sizeof(uint32_t), error);
     }
     bool ok = std::fflush(file) == 0 && error->empty();
+    std::fprintf(stderr, "state save: %lld bytes on disk\n", ok ? static_cast<long long>(std::ftell(file)) : -1LL);
     if (std::fclose(file) != 0) {
         ok = false;
         if (error->empty()) {
@@ -401,6 +402,7 @@ bool GameStateLoad(const std::filesystem::path &path, std::string *error) {
     bool ok = Get(file, magic, sizeof magic) && std::memcmp(magic, kMagic, sizeof magic) == 0 &&
               GetValue(file, &version) && version == kVersion && GetValue(file, &fingerprint) &&
               GetValue(file, &old_base) && GetValue(file, &image_size) && GetValue(file, &old_region);
+    const char *section = "header";
     if (ok && ArenaRegionBase() == nullptr) {
         std::fclose(file);
         *error = "no fixed arena reservation, so a state cannot be restored";
@@ -431,9 +433,11 @@ bool GameStateLoad(const std::filesystem::path &path, std::string *error) {
     std::uint64_t count = 0;
     if (ok) {
         ok = GetValue(file, &count);
+        section = "chunks";
     }
     std::vector<StateSegment> chunks;
     std::vector<std::vector<unsigned char>> contents;
+    std::uint64_t chunk_bytes = 0;
     for (std::uint64_t i = 0; ok && i < count; i++) {
         std::uint64_t offset = 0;
         std::uint64_t size = 0;
@@ -444,12 +448,18 @@ bool GameStateLoad(const std::filesystem::path &path, std::string *error) {
         contents.emplace_back(size);
         StateSegment chunk = {offset, size};
         ok = Get(file, contents.back().data(), size);
+        chunk_bytes += size;
         chunks.push_back(chunk);
     }
+    std::fprintf(stderr, "state load parse: %llu chunks, %llu bytes at %lld\n",
+                 static_cast<unsigned long long>(chunks.size()), static_cast<unsigned long long>(chunk_bytes),
+                 ok ? static_cast<long long>(std::ftell(file)) : -1LL);
     std::uint64_t block_count = 0;
     if (ok) {
         ok = GetValue(file, &block_count);
+        section = "blocks";
     }
+    std::uint64_t block_bytes = 0;
     struct BlockRecord {
         std::uint64_t owner_offset = 0;
         std::uint64_t offset = 0;
@@ -468,10 +478,15 @@ bool GameStateLoad(const std::filesystem::path &path, std::string *error) {
         block_contents.emplace_back(block.usable);
         blocks.push_back(block);
         ok = Get(file, block_contents.back().data(), block.usable);
+        block_bytes += block.usable;
     }
+    std::fprintf(stderr, "state load parse: %llu blocks, %llu bytes at %lld\n",
+                 static_cast<unsigned long long>(blocks.size()), static_cast<unsigned long long>(block_bytes),
+                 ok ? static_cast<long long>(std::ftell(file)) : -1LL);
     std::uint64_t visual_count = 0;
     if (ok) {
         ok = GetValue(file, &visual_count);
+        section = "visuals";
     }
     struct VisualRecord {
         std::uint64_t              offset = 0;
@@ -494,6 +509,10 @@ bool GameStateLoad(const std::filesystem::path &path, std::string *error) {
         }
         record.vertex_colour = colour != 0;
         if (strips > (1u << 20) || vertices > (1u << 26) || indices > (1u << 26)) {
+            std::fprintf(stderr,
+                         "state load parse: visual %llu refuses its counts (%llu strips, %llu vertices, %llu indices)\n",
+                         static_cast<unsigned long long>(i), static_cast<unsigned long long>(strips),
+                         static_cast<unsigned long long>(vertices), static_cast<unsigned long long>(indices));
             ok = false;
             break;
         }
@@ -514,10 +533,14 @@ bool GameStateLoad(const std::filesystem::path &path, std::string *error) {
         }
         visuals.push_back(std::move(record));
     }
+    std::fprintf(stderr, "state load parse: %llu visuals at %lld\n",
+                 static_cast<unsigned long long>(visuals.size()),
+                 ok ? static_cast<long long>(std::ftell(file)) : -1LL);
     std::fclose(file);
     if (!ok) {
         if (error->empty()) {
-            *error = "the state file is too short or wrongly shaped";
+            *error = "the state's " + std::string(section) + " section is short or wrongly shaped (at " +
+                     std::to_string(static_cast<long long>(std::ftell(file))) + " bytes)";
         }
         return false;
     }
