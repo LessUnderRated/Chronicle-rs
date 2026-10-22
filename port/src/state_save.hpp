@@ -15,3 +15,12 @@
 
 bool GameStateSave(const std::filesystem::path &path, std::string *error);
 bool GameStateLoad(const std::filesystem::path &path, std::string *error);
+
+// A quick save or load the app's menu asked for, taken between ticks: `save` or `load` into the
+// save root's states/ folder, numbered by slot. The result is written beside the state as
+// last.json for the menu to show, and to stderr for the log.
+void GameStateRequest(bool save, int slot);
+// Runs one pending request, if there is one; the caller stops the audio output around it.
+bool GameStateTakeRequest(bool *save, int *slot);
+// Runs one request at once: the save root's states/slot-<N>.dcst, and the result beside it.
+bool GameStateRunRequest(const std::filesystem::path &save_root, bool save, int slot);

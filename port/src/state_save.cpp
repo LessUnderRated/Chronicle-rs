@@ -9,6 +9,8 @@
 #include "platform/arena.hpp"
 #include "platform/memory.hpp"
 
+namespace fs = std::filesystem;
+
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -157,6 +159,48 @@ std::vector<StateSegment> Segments() {
 #endif
 }
 
+// The headers whole, whatever the linker protects inside them: a state is only ever loaded in the
+// session that took it, which the check is for.
+bool SameSession(const std::vector<StateSegment> &recorded) {
+    std::vector<StateSegment> headers;
+#ifdef _WIN32
+    HMODULE module = nullptr;
+    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                            reinterpret_cast<LPCWSTR>(&SameSession), &module)) {
+        return false;
+    }
+    auto *dos = static_cast<IMAGE_DOS_HEADER *>(static_cast<void *>(module));
+    auto *nt = reinterpret_cast<IMAGE_NT_HEADERS *>(reinterpret_cast<std::uint8_t *>(module) + dos->e_lfanew);
+    auto *section = IMAGE_FIRST_SECTION(nt);
+    std::uintptr_t base = reinterpret_cast<std::uintptr_t>(module);
+    for (unsigned i = 0; i < nt->FileHeader.NumberOfSections; i++, section++) {
+        if ((section->Characteristics & IMAGE_SCN_MEM_WRITE) == 0 || section->Misc.VirtualSize == 0) {
+            continue;
+        }
+        headers.push_back({reinterpret_cast<const void *>(base + section->VirtualAddress), section->Misc.VirtualSize});
+    }
+#else
+    ElfScan scan = {reinterpret_cast<std::uintptr_t>(&SameSession), &headers};
+    dl_iterate_phdr(CollectElfSegments, &scan);
+#endif
+    for (const StateSegment &segment : recorded) {
+        std::uintptr_t start = reinterpret_cast<std::uintptr_t>(segment.address);
+        std::uintptr_t end = start + segment.size;
+        bool inside = false;
+        for (const StateSegment &header : headers) {
+            std::uintptr_t header_start = reinterpret_cast<std::uintptr_t>(header.address);
+            if (start >= header_start && end <= header_start + header.size) {
+                inside = true;
+                break;
+            }
+        }
+        if (!inside) {
+            return false;
+        }
+    }
+    return true;
+}
+
 void Put(std::FILE *file, const void *bytes, std::size_t size, std::string *error) {
     if (error->empty() && std::fwrite(bytes, 1, size, file) != size) {
         *error = std::strerror(errno);
@@ -284,6 +328,10 @@ bool GameStateLoad(const std::filesystem::path &path, std::string *error) {
         }
         return false;
     }
+    if (!SameSession(segments)) {
+        *error = "the state was saved in another session";
+        return false;
+    }
 
     // Blocks first (the image's globals point into them), then the other blocks zeroed, then the
     // image's globals over what the game's logic reads.
@@ -301,4 +349,65 @@ bool GameStateLoad(const std::filesystem::path &path, std::string *error) {
         std::memcpy(const_cast<void *>(segments[i].address), contents[i].data(), contents[i].size());
     }
     return true;
+}
+
+// ---- Requests from the app's menu -------------------------------------------------------------
+
+namespace {
+
+struct StateRequest {
+    bool save = false;
+    int  slot = 0;
+};
+
+std::vector<StateRequest> g_requests;
+
+fs::path StatePath(int slot) {
+    return std::filesystem::path("states") / ("slot-" + std::to_string(slot) + ".dcst");
+}
+
+void Report(bool save, int slot, bool ok, const std::string &error, const fs::path &last_path) {
+    // last.json is for the menu, stderr for the log the player shares.
+    std::fprintf(stderr, "state %s slot %d: %s%s\n", save ? "save" : "load", slot, ok ? "ok" : "failed",
+                 ok ? "" : (": " + error).c_str());
+    std::FILE *file = std::fopen(last_path.string().c_str(), "wb");
+    if (file != nullptr) {
+        std::fprintf(file, "{\"%s\": %d, \"slot\": %d, \"ok\": %s", save ? "save" : "load", slot, slot,
+                     ok ? "true" : "false");
+        if (!ok) {
+            std::fprintf(file, ", \"error\": \"");
+            for (char c : error) {
+                std::fprintf(file, "%c", c == '"' || c == '\\' ? ' ' : c);
+            }
+            std::fprintf(file, "\"");
+        }
+        std::fprintf(file, "}\n");
+        std::fclose(file);
+    }
+}
+
+} // namespace
+
+void GameStateRequest(bool save, int slot) {
+    g_requests.push_back({save, slot});
+}
+
+bool GameStateTakeRequest(bool *save, int *slot) {
+    if (g_requests.empty()) {
+        return false;
+    }
+    *save = g_requests.front().save;
+    *slot = g_requests.front().slot;
+    g_requests.erase(g_requests.begin());
+    return true;
+}
+
+bool GameStateRunRequest(const std::filesystem::path &save_root, bool save, int slot) {
+    fs::path path = save_root / StatePath(slot);
+    std::error_code unused;
+    fs::create_directories(path.parent_path(), unused);
+    std::string error;
+    bool ok = save ? GameStateSave(path, &error) : GameStateLoad(path, &error);
+    Report(save, slot, ok, error, path.parent_path() / "last.json");
+    return ok;
 }

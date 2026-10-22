@@ -114,17 +114,20 @@ public class ChronicleActivity extends SDLActivity implements TouchOverlay.Liste
         Native.setPaused(true);
         String speed = Native.speed() == 2 ? getString(R.string.menu_speed_fast) : getString(R.string.menu_speed_normal);
         String controls = overlay.hidden() ? getString(R.string.menu_show_controls) : getString(R.string.menu_hide_controls);
+        String last = lastStateLine();
         String[] items = {
             getString(R.string.menu_resume),
             speed,
             getString(R.string.menu_settings),
             getString(R.string.menu_edit_controls),
             controls,
+            getString(R.string.menu_save_state),
+            getString(R.string.menu_load_state),
             getString(R.string.menu_import_card),
             getString(R.string.menu_share_log),
             getString(R.string.menu_quit),
         };
-        dialog()
+        AlertDialog.Builder builder = dialog()
             .setTitle(R.string.app_name)
             .setItems(items, (d, which) -> {
                 switch (which) {
@@ -144,21 +147,80 @@ public class ChronicleActivity extends SDLActivity implements TouchOverlay.Liste
                         resume();
                         return;
                     case 5:
-                        pickCard();
+                        chooseStateSlot(true);
                         return;
                     case 6:
+                        chooseStateSlot(false);
+                        return;
+                    case 7:
+                        pickCard();
+                        return;
+                    case 8:
                         CrashReport.share(this, CrashReport.currentRun(this));
                         resume();
                         return;
-                    case 7:
+                    case 9:
                         finishAffinity();
                         System.exit(0);
                         return;
                     default:
                         resume();
                 }
+            });
+        if (last != null) {
+            builder.setMessage(last);
+        }
+        builder.setOnCancelListener(d -> resume())
+            .show();
+    }
+
+    /** The quick save and load: three slots in the save folder, one file each. */
+    private static final int STATE_SLOTS = 3;
+
+    private File stateFile(int slot) {
+        return new File(new File(getFilesDir(), "save/states"), "slot-" + slot + ".dcst");
+    }
+
+    /** What the last state request reported, shown over the menu until it is seen. */
+    private long lastStateShown;
+
+    private String lastStateLine() {
+        try {
+            File file = new File(new File(getFilesDir(), "save/states"), "last.json");
+            JSONObject result = new JSONObject(new String(Files.readAllBytes(file.toPath()), StandardCharsets.UTF_8));
+            if (file.lastModified() <= lastStateShown) {
+                return null;
+            }
+            lastStateShown = file.lastModified();
+            String action = getString(result.optBoolean("save") ? R.string.menu_save_state : R.string.menu_load_state);
+            String outcome = result.optBoolean("ok") ? "ok" : "failed: " + result.optString("error", "");
+            return getString(R.string.state_last, action, result.optInt("slot"), outcome);
+        } catch (IOException | JSONException e) {
+            return null;
+        }
+    }
+
+    private void chooseStateSlot(boolean save) {
+        String[] rows = new String[STATE_SLOTS];
+        for (int slot = 0; slot < STATE_SLOTS; slot++) {
+            File file = stateFile(slot);
+            rows[slot] = !save && !file.exists()
+                             ? getString(R.string.state_slot_empty, slot + 1)
+                             : getString(R.string.state_slot, slot + 1);
+        }
+        dialog()
+            .setTitle(save ? R.string.menu_save_state : R.string.menu_load_state)
+            .setMessage(getString(R.string.state_session))
+            .setItems(rows, (d, which) -> {
+                if (!save && !stateFile(which).exists()) {
+                    resume();
+                    return;
+                }
+                Native.setSetting("state.request", "\"" + (save ? "save" : "load") + ":" + which + "\"");
+                resume();
             })
-            .setOnCancelListener(d -> resume())
+            .setNegativeButton(R.string.menu_back, (d, w) -> onMenu())
+            .setOnCancelListener(d -> onMenu())
             .show();
     }
 

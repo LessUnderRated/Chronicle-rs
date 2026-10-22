@@ -266,6 +266,28 @@ void ApplyAndroidSettings() {
     char name[64];
     char value[256];
     while (chronicle_android_take_setting(name, sizeof name, value, sizeof value)) {
+        if (std::strcmp(name, "state.request") == 0) {
+            // The app menu's quick save and load: "save:<slot>" or "load:<slot>" as a JSON string.
+            std::string_view request(value);
+            if (request.size() >= 2 && request.front() == '"' && request.back() == '"') {
+                request = request.substr(1, request.size() - 2);
+            }
+            bool        save = request.starts_with("save:");
+            int         slot = 0;
+            std::string rest(request.substr(save ? 5 : 5));
+            bool        known = save || request.starts_with("load:");
+            if (known) {
+                known = !rest.empty() &&
+                        rest.find_first_not_of("0123456789") == std::string_view::npos &&
+                        (slot = std::atoi(rest.data())) >= 0 && slot < 10;
+            }
+            if (known) {
+                GameStateRequest(save, slot);
+            } else {
+                std::fprintf(stderr, "android: bad state request %s\n", value);
+            }
+            continue;
+        }
         if (!ConfigSetValue(name, value)) {
             std::fprintf(stderr, "android: %s = %s was not applied\n", name, value);
         }
@@ -357,6 +379,19 @@ void RenderAudio(void *, float *out, int frames) {
 // reads the game's memory on another thread, and the clock re-anchors after a load, as it does
 // after a pause.
 void StateHookPump() {
+    bool save = false;
+    int  slot = 0;
+    while (GameStateTakeRequest(&save, &slot)) {
+        AudioOutputStop();
+        bool ok = GameStateRunRequest(PathsSaveRoot(), save, slot);
+        AudioOutputStart(audio::DefaultMixer().Rate(), RenderAudio, nullptr);
+        if (!save) {
+            ClockSetTickRate(ClockTickRate());
+        }
+        if (!ok) {
+            break;
+        }
+    }
     if (g_options.state_save == nullptr && g_options.state_load == nullptr) {
         return;
     }

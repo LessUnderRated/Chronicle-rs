@@ -263,14 +263,15 @@ image's writable globals (.data and .bss, clipped to what the kernel reports wri
 arena block, and a load puts the blocks back at their recorded addresses (unmapping a block the
 owner has since grown, zeroing every block the state does not hold) and writes the globals back,
 all between ticks with the audio output stopped. States are per session: they record raw
-addresses, and a fresh process lays its image and arenas elsewhere. The PC test hooks exercise the
-round trip: `--state-save FILE`, `--state-load FILE`, `--state-frame N`.
+addresses, and a load refuses one whose segments do not lie inside the running image. The app's
+menu carries Save state and Load state over three slots in the save folder's `states/`; the PC
+test hooks drive the same round trip: `--state-save FILE`, `--state-load FILE`, `--state-frame N`.
 
-Still to come: the app's menu rows for it, restoring across sessions (rebase the recorded
-addresses onto where the new process laid things), and the audit of host state that outlives a
-load (textures re-uploaded only when the game touches them, sound banks, the texture registry),
-which today shows at worst as one frame of a stale image. Until the feature is finished the game
-saves where it always has, with the autosave on arriving in a town.
+Still to come: restoring across sessions (rebase the recorded addresses onto where the new process
+laid things), and the audit of host state that outlives a load (textures re-uploaded only when the
+game touches them, sound banks, the texture registry), which today shows at worst as one frame of
+a stale image. Until the feature is finished the game saves where it always has, with the autosave
+on arriving in a town.
 
 ## Where it stands
 
