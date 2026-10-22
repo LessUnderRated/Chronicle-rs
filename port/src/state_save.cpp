@@ -10,6 +10,8 @@
 
 #include "platform/arena.hpp"
 #include "platform/memory.hpp"
+#include "draw3d.hpp"
+#include "texture_port.hpp"
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -25,7 +27,7 @@ namespace fs = std::filesystem;
 namespace {
 
 constexpr char kMagic[4] = {'D', 'C', 'S', 'T'};
-constexpr std::uint32_t kVersion = 2;
+constexpr std::uint32_t kVersion = 3;
 
 std::uint64_t Fingerprint(const unsigned char *bytes, std::size_t size) {
     std::uint64_t hash = 0xcbf29ce484222325;
@@ -259,16 +261,20 @@ bool GetValue(std::FILE *file, std::uint64_t *value) {
 // Shifts every 8-byte value that named the saved image by the base difference: a vtable pointer, a
 // static string, a function pointer. Nothing else in the game's memory lands in the image's range
 // (the game's numbers are small, its doubles far from a code address), so the scan is exact.
-void Rebase(unsigned char *bytes, std::size_t size, std::uint64_t old_base, std::uint64_t new_base, std::uint64_t image_size) {
+std::size_t Rebase(unsigned char *bytes, std::size_t size, std::uint64_t old_base, std::uint64_t new_base,
+                   std::uint64_t image_size) {
     std::uint64_t delta = new_base - old_base;
+    std::size_t   rebased = 0;
     for (std::size_t i = 0; i + 8 <= size; i += 8) {
         std::uint64_t value = 0;
         std::memcpy(&value, bytes + i, 8);
         if (value >= old_base && value - old_base < image_size) {
             value += delta;
             std::memcpy(bytes + i, &value, 8);
+            rebased++;
         }
     }
+    return rebased;
 }
 
 } // namespace
@@ -335,10 +341,33 @@ bool GameStateSave(const std::filesystem::path &path, std::string *error) {
     for (const auto &bytes : contents) {
         chunk_bytes += bytes.size();
     }
-    std::fprintf(stderr, "state save: table %s, %llu chunk bytes, %llu blocks, region %p, image base %llx\n",
+    // The visuals' build inputs: which VU block was built from which model data, both at offsets
+    // in the reservation, so a load re-runs the builds against the memory it brought back.
+    std::vector<Draw3DVisualInput> visuals;
+    std::uint64_t region = reinterpret_cast<std::uint64_t>(ArenaRegionBase());
+    std::uint64_t region_size = ArenaRegionSize();
+    for (const Draw3DVisualInput &input : Draw3DVisualInputs()) {
+        std::uint64_t block = reinterpret_cast<std::uintptr_t>(input.block) - region;
+        std::uint64_t data = reinterpret_cast<std::uintptr_t>(input.data) - region;
+        if (input.kind == 0 || input.block == nullptr || input.data == nullptr ||
+            block >= region_size || data >= region_size) {
+            continue;
+        }
+        visuals.push_back({reinterpret_cast<const void *>(block), reinterpret_cast<const void *>(data), input.kind,
+                           input.unknown0, input.unknown1});
+    }
+    std::fprintf(stderr, "state save: table %s, %llu chunk bytes, %llu blocks, %zu visuals, region %p, image base %llx\n",
                  layout.fingerprint != 0 ? "on" : "off", static_cast<unsigned long long>(chunk_bytes),
-                 static_cast<unsigned long long>(blocks), static_cast<void *>(ArenaRegionBase()),
+                 static_cast<unsigned long long>(blocks), visuals.size(), static_cast<void *>(ArenaRegionBase()),
                  static_cast<unsigned long long>(module.base));
+    PutValue(file, visuals.size(), error);
+    for (const Draw3DVisualInput &input : visuals) {
+        PutValue(file, reinterpret_cast<std::uint64_t>(input.block), error);
+        PutValue(file, reinterpret_cast<std::uint64_t>(input.data), error);
+        PutValue(file, static_cast<std::uint64_t>(input.kind), error);
+        PutValue(file, static_cast<std::uint64_t>(input.unknown0), error);
+        PutValue(file, static_cast<std::uint64_t>(input.unknown1), error);
+    }
     bool ok = std::fflush(file) == 0 && error->empty();
     if (std::fclose(file) != 0) {
         ok = false;
@@ -434,6 +463,25 @@ bool GameStateLoad(const std::filesystem::path &path, std::string *error) {
         blocks.push_back(block);
         ok = Get(file, block_contents.back().data(), block.usable);
     }
+    std::uint64_t visual_count = 0;
+    if (ok) {
+        ok = GetValue(file, &visual_count);
+    }
+    std::vector<Draw3DVisualInput> visuals;
+    for (std::uint64_t i = 0; ok && i < visual_count; i++) {
+        std::uint64_t block_offset = 0;
+        std::uint64_t data_offset = 0;
+        std::uint64_t kind = 0;
+        std::uint64_t unknown0 = 0;
+        std::uint64_t unknown1 = 0;
+        ok = GetValue(file, &block_offset) && GetValue(file, &data_offset) && GetValue(file, &kind) &&
+             GetValue(file, &unknown0) && GetValue(file, &unknown1);
+        if (!ok) {
+            break;
+        }
+        visuals.push_back({reinterpret_cast<const void *>(block_offset), reinterpret_cast<const void *>(data_offset),
+                           static_cast<int>(kind), static_cast<int>(unknown0), static_cast<int>(unknown1)});
+    }
     std::fclose(file);
     if (!ok) {
         if (error->empty()) {
@@ -444,14 +492,15 @@ bool GameStateLoad(const std::filesystem::path &path, std::string *error) {
 
     // Blocks first — the globals point into them — then the other blocks zeroed, then the globals,
     // with the pointers that named the saved image moved by the base difference.
-    std::fprintf(stderr, "state load: fingerprint %016llx, %zu chunks, %zu blocks, image base %llx -> %llx\n",
-                 static_cast<unsigned long long>(fingerprint), chunks.size(), blocks.size(),
+    std::size_t   rebased = 0;
+    std::fprintf(stderr, "state load: fingerprint %016llx, %zu chunks, %zu blocks, %zu visuals, image base %llx -> %llx\n",
+                 static_cast<unsigned long long>(fingerprint), chunks.size(), blocks.size(), visuals.size(),
                  static_cast<unsigned long long>(old_base), static_cast<unsigned long long>(module.base));
     for (std::size_t i = 0; i < blocks.size(); i++) {
         ArenaBlockRestore(reinterpret_cast<const void *>(module.base + blocks[i].owner_offset), blocks[i].offset,
                           blocks[i].usable, blocks[i].lead, block_contents[i].data(), block_contents[i].size());
         if (fingerprint != 0) {
-            Rebase(ArenaRegionBase() + blocks[i].offset, blocks[i].usable, old_base, module.base, image_size);
+            rebased += Rebase(ArenaRegionBase() + blocks[i].offset, blocks[i].usable, old_base, module.base, image_size);
         }
     }
     std::vector<const void *> keep;
@@ -461,10 +510,23 @@ bool GameStateLoad(const std::filesystem::path &path, std::string *error) {
     ArenaZeroOtherBlocks(keep.data(), keep.size());
     for (std::size_t i = 0; i < chunks.size(); i++) {
         if (fingerprint != 0) {
-            Rebase(contents[i].data(), contents[i].size(), old_base, module.base, image_size);
+            rebased += Rebase(contents[i].data(), contents[i].size(), old_base, module.base, image_size);
         }
         std::memcpy(reinterpret_cast<void *>(module.base + chunks[i].offset), contents[i].data(), contents[i].size());
     }
+    // The game's memory says every model's VU data is built, but this session's records of them
+    // are gone or another session's: rebuilt from the game memory the restore brought back, after
+    // the textures their materials name.
+    TextureRebuild();
+    Draw3DClearVisuals();
+    for (const Draw3DVisualInput &input : visuals) {
+        Draw3DRebuildVisual({reinterpret_cast<const void *>(reinterpret_cast<std::uint64_t>(ArenaRegionBase()) +
+                                                             reinterpret_cast<std::uint64_t>(input.block)),
+                             reinterpret_cast<const void *>(reinterpret_cast<std::uint64_t>(ArenaRegionBase()) +
+                                                            reinterpret_cast<std::uint64_t>(input.data)),
+                             input.kind, input.unknown0, input.unknown1});
+    }
+    std::fprintf(stderr, "state load: %zu pointers rebased, %zu visuals rebuilt\n", rebased, visuals.size());
     return true;
 }
 

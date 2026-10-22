@@ -385,9 +385,6 @@ void StateHookPump() {
     while (GameStateTakeRequest(&save, &slot)) {
         AudioOutputStop();
         bool ok = GameStateRunRequest(PathsSaveRoot(), save, slot);
-        if (ok && !save) {
-            TextureRebuild();
-        }
         AudioOutputStart(audio::DefaultMixer().Rate(), RenderAudio, nullptr);
         if (!save) {
             ClockSetTickRate(ClockTickRate());
@@ -420,9 +417,6 @@ void StateHookPump() {
         loaded = true;
         AudioOutputStop();
         bool ok = GameStateLoad(PathsFromUtf8(g_options.state_load), &error);
-        if (ok) {
-            TextureRebuild();
-        }
         AudioOutputStart(audio::DefaultMixer().Rate(), RenderAudio, nullptr);
         std::fprintf(stderr, "state load: %s\n", ok ? "ok" : error.c_str());
         if (!ok) {

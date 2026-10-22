@@ -138,6 +138,22 @@ struct Draw3DVisual {
     std::vector<uint32_t>      indices; // kept only for immediate (per-frame) visuals
     bool                       vertex_colour = false;
     bool                       immediate = false;
+    // What the record was built from, for a state restore to rebuild it: the kind (1 the MDT
+    // build, 2 the shadow build), the VU block, and the model data it was made from — both
+    // addresses in the arenas, which a state restore puts back where they were.
+    int                        source_kind = 0;
+    const void                *source_block = nullptr;
+    const void                *source_data = nullptr;
+    int                        source_unknown0 = 0;
+    int                        source_unknown1 = 0;
+};
+
+struct Draw3DVisualInput {
+    const void *block = nullptr;
+    const void *data = nullptr;
+    int         kind = 0;
+    int         unknown0 = 0;
+    int         unknown1 = 0;
 };
 
 Draw3DVisual *Draw3DFindVisual(const void *block);
@@ -146,9 +162,18 @@ Draw3DVisual *Draw3DFindVisual(const void *block);
 Draw3DVisual &Draw3DRegisterVisual(unsigned int *block, bool transient);
 // MGBeginFrame's: drops transient records and those whose block was cleared or reused.
 void Draw3DSweepVisuals();
+// What the lasting records were built from, for the state to carry.
+std::vector<Draw3DVisualInput> Draw3DVisualInputs();
+// Forgets every record, so a state restore's rebuilds start clean.
+void Draw3DClearVisuals();
+// Builds a record again from the game memory the restore brought back.
+void Draw3DRebuildVisual(const Draw3DVisualInput &input);
 // Uploads the record's vertices and indices as a mesh, or keeps them for immediate draws.
 void Draw3DFinishVisual(Draw3DVisual &visual);
 void Draw3DDrawVisual(const Draw3DVisual &visual, const float model[4][4], const RenderInfo &info, int program);
 
 // Strip index order into a triangle list, every triangle wound as the strip's first.
 void Draw3DStripToList(std::vector<uint32_t> &indices, uint32_t first_vertex, uint32_t count);
+
+// The shadow visual's build, shared by the game's own entry and the state restore's rebuild.
+int BuildShadowVisual(unsigned int *block, unsigned int *model_data);

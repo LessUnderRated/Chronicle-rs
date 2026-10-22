@@ -471,6 +471,9 @@ PORT_OVERRIDE void CTextureManager::EnterFixTextureZ(u_char *buffer) {
 // they were right about everything else. Pixels are game memory the restore brought back.
 void TextureRebuild() {
     PortReleaseOwner(PortTextureOwner::Manager);
+    int textures = 0;
+    int targets = 0;
+    int failed = 0;
     for (int i = 0; i < 196; i++) {
         CTexture &tex = TexManager.textures[i];
         if (tex.name[0] == 0) {
@@ -481,6 +484,7 @@ void TextureRebuild() {
             // the named target already, and the restored TEX0 names its key wrongly.
             unsigned tbp = PortRegisterNamedTarget("work", 640, SCREEN_HALF_HEIGHT, true, PortTextureOwner::Manager);
             tex.tex0 = SCE_GS_SET_TEX0(tbp, 10, 0, 10, 8, 1, 0, 0, 0, 0, 0, 0);
+            targets++;
             continue;
         }
         bool    indexed = tex.bpp < 2;
@@ -488,6 +492,7 @@ void TextureRebuild() {
         unsigned tbp;
         if (tex.image[0] == nullptr) {
             tbp = PortCreatePlaceholder(tex.name, tex.width, tex.height, tex.bpp, PortTextureOwner::Manager, &cbp);
+            targets++;
         } else {
             const u_char      *levels[3] = {(u_char *) tex.image[0], (u_char *) tex.image[1], (u_char *) tex.image[2]};
             PortDecodedTexture decoded;
@@ -495,6 +500,7 @@ void TextureRebuild() {
                                    (u_char *) tex.clut, tex.bpp == 0 ? 16 : tex.bpp == 1 ? 256 : 0,
                                    indexed && tex.swizzled != 0, decoded)) {
                 std::fprintf(stderr, "texture rebuild: %s would not decode\n", tex.name);
+                failed++;
                 continue;
             }
             LocalizeTexture(tex.name, decoded);
@@ -502,12 +508,14 @@ void TextureRebuild() {
             MakeGroundPeriodic(tex.name, decoded);
             DumpTexture(tex.name, decoded);
             tbp = PortCreateTexture(decoded, PortTextureOwner::Manager, &cbp);
+            textures++;
         }
         tex.tex0 = (tex.tex0 & ~(u_long) 0x3FFF) | tbp;
         if (indexed) {
             tex.tex0 = (tex.tex0 & ~((u_long) 0x3FFF << 37)) | ((u_long) cbp << 37);
         }
     }
+    std::fprintf(stderr, "texture rebuild: %d textures, %d targets, %d failed\n", textures, targets, failed);
 }
 
 // Native textures occupy independent storage, so simulated PS2 VRAM overlap does not overwrite
