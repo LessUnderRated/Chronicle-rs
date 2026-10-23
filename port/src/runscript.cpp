@@ -4,11 +4,10 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
-#include <memory>
-#include <unordered_map>
 
 #include "battle_globals.hpp"
 #include "dataalloc.hpp"
+#include "platform/arena.hpp"
 
 // The script VM on the host. A compiled script (.stb) is read where it was loaded, as retail
 // does: the header, the program table and the instructions are 32-bit integers on disc and on
@@ -20,6 +19,10 @@
 // The stacks are the other half. EdSetEventScript and BtSetEventScript carve 128 operand slots
 // and 512 call records out of an arena at the PS2's 8 and 12 bytes; the host records are 16 and
 // 24. load keeps the counts and gives each interpreter host-sized storage of its own.
+//
+// Both live in arena blocks, not the native heap: a save state carries the blocks and the
+// interpreters (globals all: EdEventScript, SystemEventScript, RunScript, MainMonstorUnit's), so
+// the restored frame, sp, call_sp and func still name the stacks and records they were saved with.
 
 namespace {
 
@@ -37,23 +40,33 @@ struct DiscFuncData {
 
 static_assert(sizeof(DiscFuncData) == 16);
 
-struct HostStacks {
-    std::unique_ptr<RS_STACKDATA[]> stack;
-    int                             stack_num = 0;
-    std::unique_ptr<RS_CALLDATA[]>  call;
-    int                             call_num = 0;
+// The decoded records, keyed by the record's address in the loaded file and probed linearly. A
+// record decoded again after its buffer took another file is rewritten in place; the frames that
+// still name it died with the old program. An arena clear empties the table with the scripts it
+// was decoded from.
+struct FuncRecord {
+    const char *record;
+    funcdata    func;
 };
 
-// Keyed by the record's address in the loaded file. A record decoded again after its buffer took
-// another file is rewritten in place; the frames that still name it died with the old program.
-std::unordered_map<const char *, std::unique_ptr<funcdata>> &FuncRecords() {
-    static std::unordered_map<const char *, std::unique_ptr<funcdata>> records;
-    return records;
+constexpr std::size_t kFuncRecords = 16384;
+char                  g_func_records_owner;
+
+FuncRecord *FuncRecords() {
+    return reinterpret_cast<FuncRecord *>(ArenaBlock(&g_func_records_owner, kFuncRecords * sizeof(FuncRecord)));
 }
 
-std::unordered_map<const CRunScript *, HostStacks> &Stacks() {
-    static std::unordered_map<const CRunScript *, HostStacks> stacks;
-    return stacks;
+funcdata *FuncSlot(const char *record) {
+    FuncRecord *records = FuncRecords();
+    std::size_t start = (reinterpret_cast<std::uintptr_t>(record) >> 4) % kFuncRecords;
+    for (std::size_t probe = 0; probe < kFuncRecords; probe++) {
+        FuncRecord &slot = records[(start + probe) % kFuncRecords];
+        if (slot.record == record || slot.record == nullptr) {
+            slot.record = record;
+            return &slot.func;
+        }
+    }
+    ArenaOverflow("script function records", static_cast<int>(kFuncRecords) + 1, static_cast<int>(kFuncRecords));
 }
 
 // Names are zero in every shipped script; a non-zero one is an offset into the code section, as
@@ -61,15 +74,12 @@ std::unordered_map<const CRunScript *, HostStacks> &Stacks() {
 funcdata *HostFunc(const char *code, const char *record) {
     DiscFuncData disc;
     std::memcpy(&disc, record, sizeof(disc));
-    std::unique_ptr<funcdata> &slot = FuncRecords()[record];
-    if (!slot) {
-        slot = std::make_unique<funcdata>();
-    }
+    funcdata *slot = FuncSlot(record);
     slot->addr = disc.addr;
     slot->name = disc.name != 0 ? const_cast<char *>(code + disc.name) : nullptr;
     slot->local = disc.local;
     slot->arg = disc.arg;
-    return slot.get();
+    return slot;
 }
 
 const char *FuncName(const funcdata *func) {
@@ -95,18 +105,12 @@ PORT_OVERRIDE int chk_int(RS_STACKDATA data, funcdata *function) {
 PORT_OVERRIDE void CRunScript::load(RS_PROG_HEADER *prog, RS_STACKDATA *stack, int stack_num, RS_CALLDATA *call, int call_num) {
     (void) stack;
     (void) call;
-    HostStacks &host = Stacks()[this];
-    if (host.stack_num != stack_num) {
-        host.stack = std::make_unique<RS_STACKDATA[]>(static_cast<size_t>(stack_num));
-        host.stack_num = stack_num;
-    }
-    if (host.call_num != call_num) {
-        host.call = std::make_unique<RS_CALLDATA[]>(static_cast<size_t>(call_num));
-        host.call_num = call_num;
-    }
-    this->stack = host.stack.get();
+    // One block per interpreter: the operand stack, then the call records.
+    std::size_t    stack_bytes = static_cast<std::size_t>(stack_num) * sizeof(RS_STACKDATA);
+    unsigned char *block = ArenaBlock(this, stack_bytes + static_cast<std::size_t>(call_num) * sizeof(RS_CALLDATA));
+    this->stack = reinterpret_cast<RS_STACKDATA *>(block);
+    this->call = reinterpret_cast<RS_CALLDATA *>(block + stack_bytes);
     this->stack_num = stack_num;
-    this->call = host.call.get();
     this->call_num = call_num;
     this->stack_end = this->stack + stack_num;
     this->call_end = this->call + call_num;

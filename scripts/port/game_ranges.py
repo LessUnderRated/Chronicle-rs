@@ -16,6 +16,19 @@ MAGIC = b"DCLR"
 VERSION = 1
 WRITABLE = (".bss", ".data")
 
+# port/src units that replace retail's game logic whole, with retail's statics in them: an interior's
+# characters and cameras (edit_in), the town loop's menu and event state (editloop, editloop3), the
+# dungeon's player and status panel (dun/). Their globals are the game's as much as ps2/src's are,
+# and hold nothing of the host session's (no heap containers, no renderer handles), so a state
+# carries them. The rest of port/src is the host's.
+PORT_GAME_UNITS = (
+    "/dc_port.dir/src/edit_in.cpp.o",
+    "/dc_port.dir/src/editloop.cpp.o",
+    "/dc_port.dir/src/editloop3.cpp.o",
+    "/dc_port.dir/src/dun/gameloop.cpp.o",
+    "/dc_port.dir/src/dun/movechara.cpp.o",
+)
+
 
 def parse(lines):
     ranges = []
@@ -54,7 +67,9 @@ def parse(lines):
         # other globals (this module's, the renderer's, the Rust crate's) are interleaved between
         # the game's by the linker, so the table must carry the game's ranges exactly and never a
         # span that covers a gap.
-        if ("/dc_ps2.dir/" not in path or "/kazarov/" in path) and "/ps2/src/" not in path:
+        game = ("/dc_ps2.dir/" in path and "/kazarov/" not in path) or "/ps2/src/" in path
+        game = game or path.endswith(PORT_GAME_UNITS)
+        if not game:
             others.append((vma, size))
         else:
             ranges.append((vma, size))

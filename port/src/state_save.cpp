@@ -28,8 +28,10 @@ namespace fs = std::filesystem;
 namespace {
 
 constexpr char kMagic[4] = {'D', 'C', 'S', 'T'};
-constexpr std::uint32_t kVersion = 6;
-constexpr std::uint32_t kOldestVersion = 5;
+// 7: the script VM's stacks and function records moved into arena blocks. A state from before
+// holds interpreters that name the saving session's heap, which crashes the first event resumed.
+constexpr std::uint32_t kVersion = 7;
+constexpr std::uint32_t kOldestVersion = 7;
 
 std::uint64_t Fingerprint(const unsigned char *bytes, std::size_t size) {
     std::uint64_t hash = 0xcbf29ce484222325;
@@ -431,10 +433,15 @@ bool GameStateLoad(const std::filesystem::path &path, std::string *error) {
     std::uint64_t image_size = 0;
     std::uint64_t old_region = 0;
     bool ok = Get(file, magic, sizeof magic) && std::memcmp(magic, kMagic, sizeof magic) == 0 &&
-              GetValue(file, &version) && version >= kOldestVersion && version <= kVersion &&
-              GetValue(file, &fingerprint) && GetValue(file, &old_base) && GetValue(file, &image_size) &&
+              GetValue(file, &version) && GetValue(file, &fingerprint) && GetValue(file, &old_base) && GetValue(file, &image_size) &&
               GetValue(file, &old_region);
     const char *section = "header";
+    if (ok && (version < kOldestVersion || version > kVersion)) {
+        std::fclose(file);
+        *error = version < kOldestVersion ? "the state was saved by an older version of the app; save it again"
+                                          : "the state was saved by a newer version of the app";
+        return false;
+    }
     if (ok && ArenaRegionBase() == nullptr) {
         std::fclose(file);
         *error = "no fixed arena reservation, so a state cannot be restored";
