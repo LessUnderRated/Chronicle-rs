@@ -11,6 +11,7 @@
 #include "platform/arena.hpp"
 #include "platform/memory.hpp"
 #include "draw3d.hpp"
+#include "savedata.hpp"
 #include "texture_port.hpp"
 
 #ifdef _WIN32
@@ -27,7 +28,7 @@ namespace fs = std::filesystem;
 namespace {
 
 constexpr char kMagic[4] = {'D', 'C', 'S', 'T'};
-constexpr std::uint32_t kVersion = 4;
+constexpr std::uint32_t kVersion = 5;
 
 std::uint64_t Fingerprint(const unsigned char *bytes, std::size_t size) {
     std::uint64_t hash = 0xcbf29ce484222325;
@@ -358,11 +359,11 @@ bool GameStateSave(const std::filesystem::path &path, std::string *error) {
         records.push_back({visual, offset});
     }
     std::fprintf(stderr,
-                 "state save: table %s, %llu chunk bytes, %llu blocks, %zu visuals (%llu vertices), region %p, image base %llx\n",
+                 "state save: table %s, %llu chunk bytes, %llu blocks, %zu visuals (%llu vertices), save data %zu, region %p, image base %llx\n",
                  layout.fingerprint != 0 ? "on" : "off", static_cast<unsigned long long>(chunk_bytes),
                  static_cast<unsigned long long>(blocks), records.size(),
-                 static_cast<unsigned long long>(visual_vertices), static_cast<void *>(ArenaRegionBase()),
-                 static_cast<unsigned long long>(module.base));
+                 static_cast<unsigned long long>(visual_vertices), sizeof(CSaveData),
+                 static_cast<void *>(ArenaRegionBase()), static_cast<unsigned long long>(module.base));
     PutValue(file, records.size(), error);
     for (const auto &[visual, offset] : records) {
         PutValue(file, offset, error);
@@ -373,6 +374,14 @@ bool GameStateSave(const std::filesystem::path &path, std::string *error) {
         Put(file, visual->vertices.data(), visual->vertices.size() * sizeof(gfx::Vertex3D), error);
         PutValue(file, visual->indices.size(), error);
         Put(file, visual->indices.data(), visual->indices.size() * sizeof(uint32_t), error);
+    }
+    // Retail's save_data is a static in main.cpp, so the layout table never sees the port's
+    // CSaveData: items, dungeon status, flags and Georama live here and nowhere else in a state.
+    PutValue(file, sizeof(CSaveData), error);
+    if (SaveData == nullptr) {
+        *error = "no save data to write";
+    } else {
+        Put(file, SaveData, sizeof(CSaveData), error);
     }
     bool ok = std::fflush(file) == 0 && error->empty();
     std::fprintf(stderr, "state save: %lld bytes on disk\n", ok ? static_cast<long long>(std::ftell(file)) : -1LL);
@@ -537,15 +546,35 @@ bool GameStateLoad(const std::filesystem::path &path, std::string *error) {
         }
         visuals.push_back(std::move(record));
     }
+    std::uint64_t save_size = 0;
+    std::vector<unsigned char> save_bytes;
+    if (ok) {
+        ok = GetValue(file, &save_size);
+        section = "save data";
+        if (ok && save_size != sizeof(CSaveData)) {
+            std::fprintf(stderr, "state load parse: save data is %llu bytes, expected %zu\n",
+                         static_cast<unsigned long long>(save_size), sizeof(CSaveData));
+            ok = false;
+        }
+        if (ok) {
+            save_bytes.resize(save_size);
+            ok = Get(file, save_bytes.data(), save_size);
+        }
+    }
     long long at = std::ftell(file);
-    std::fprintf(stderr, "state load parse: %llu visuals at %lld\n",
-                 static_cast<unsigned long long>(visuals.size()), at);
+    std::fprintf(stderr, "state load parse: %llu visuals, save data %zu at %lld\n",
+                 static_cast<unsigned long long>(visuals.size()), save_bytes.size(), at);
     std::fclose(file);
     if (!ok) {
         if (error->empty()) {
             *error = "the state's " + std::string(section) + " section is short or wrongly shaped (at " +
                      std::to_string(at) + " bytes)";
         }
+        return false;
+    }
+    CSaveData *live = SaveData;
+    if (live == nullptr) {
+        *error = "no save data to restore into";
         return false;
     }
 
@@ -573,6 +602,10 @@ bool GameStateLoad(const std::filesystem::path &path, std::string *error) {
         }
         std::memcpy(reinterpret_cast<void *>(module.base + chunks[i].offset), contents[i].data(), contents[i].size());
     }
+    // The pointer the chunks restored may name the unused retail static; this session's save is
+    // the port's object, which the layout table does not carry.
+    std::memcpy(live, save_bytes.data(), save_bytes.size());
+    SaveData = live;
     // The game's memory says every model's VU data is built, but this session's records of them
     // are gone: rebuilt from the records the state carried, after the textures their materials
     // name. The blocks already hold their tags.

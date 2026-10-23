@@ -9,6 +9,8 @@
 //
 //   - the arena blocks live in Kazarov's fixed reservation, whose address the same candidates pick
 //     on every launch, so the game's pointers into them — whole and truncated — keep their meaning;
+//   - CSaveData (items, dungeon progress, flags, Georama) is the port's own object, not in that
+//     table, so a state carries it as its own blob;
 //   - the game's globals are recorded at offsets from the code image's base, and a load rewrites
 //     the 8-byte values that named the old image by the base difference (a vtable pointer, a static
 //     string, a function pointer);
