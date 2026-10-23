@@ -480,7 +480,13 @@ void TextureCollectSnapshots(std::vector<PortTextureSnapshot> *out) {
     out->clear();
     for (int i = 1; i < 196; i++) {
         CTexture &tex = TexManager.textures[i];
-        if (tex.name[0] == 0 || tex.image[0] != nullptr) {
+        if (tex.name[0] == 0) {
+            continue;
+        }
+        unsigned tbp = static_cast<unsigned>(tex.tex0 & 0x3FFF);
+        // Named render targets (water, shadow, work-like buffers) are re-registered, not snapshotted:
+        // the game draws into them by name.
+        if (PortKeyIsNamedTarget(tbp)) {
             continue;
         }
         PortTextureRef ref = PortTextureFromCTexture(&tex);
@@ -547,11 +553,30 @@ static bool TextureRegistryStillHolds() {
     return held > 0;
 }
 
+static unsigned BindSnapshot(CTexture &tex, const PortTextureSnapshot &snap, unsigned want_tbp, unsigned want_cbp,
+                             unsigned *cbp) {
+    PortDecodedTexture decoded;
+    size_t             logical =
+        static_cast<size_t>(tex.width) * static_cast<size_t>(tex.height) * (snap.indexed ? 1u : 4u);
+    if (snap.pixels.size() == logical && tex.width > 0 && tex.height > 0) {
+        decoded.width = static_cast<unsigned>(tex.width);
+        decoded.height = static_cast<unsigned>(tex.height);
+    } else {
+        decoded.width = snap.width;
+        decoded.height = snap.height;
+    }
+    decoded.format = snap.indexed ? gfx::TextureFormat::Index8 : gfx::TextureFormat::Rgba8;
+    decoded.four_bit = false;
+    decoded.levels.push_back(snap.pixels);
+    decoded.palette = snap.palette;
+    return PortCreateTextureAt(want_tbp, decoded, PortTextureOwner::Manager, want_cbp, cbp);
+}
+
 // After a state restore the manager's own memory says every texture is entered. A same-session
 // load still has those GPU keys; a boot load does not. Rebuild occupies the restored TBP0s so
-// every TEX0 copy the state brought back still names a live image. Pixels are game memory the
-// restore brought back, or a GPU snapshot for fixed sheets that never copied their image into
-// the staging buffer.
+// every TEX0 copy the state brought back still names a live image. Snapshots are the GPU at save
+// (the only copy of fixed sheets whose image pointer names a reused file buffer). Image pointers
+// that still hold pixels are the fallback.
 void TextureRebuild(const std::vector<PortTextureSnapshot> &snapshots) {
     if (TextureRegistryStillHolds()) {
         std::fprintf(stderr, "texture rebuild: kept live registry\n");
@@ -583,41 +608,31 @@ void TextureRebuild(const std::vector<PortTextureSnapshot> &snapshots) {
         }
         bool     indexed = tex.bpp < 2;
         unsigned cbp = 0;
-        unsigned tbp;
-        if (tex.image[0] != nullptr) {
+        unsigned tbp = 0;
+        bool     bound = false;
+        if (const PortTextureSnapshot *snap = FindSnapshot(snapshots, tex.name)) {
+            tbp = BindSnapshot(tex, *snap, want_tbp, want_cbp, &cbp);
+            from_snap++;
+            bound = true;
+        } else if (tex.image[0] != nullptr) {
             const u_char      *levels[3] = {(u_char *) tex.image[0], (u_char *) tex.image[1], (u_char *) tex.image[2]};
             PortDecodedTexture decoded;
-            if (!PortDecodeTexture(tex.bpp, tex.width, tex.height, levels, tex.image[1] != nullptr ? 3 : 1,
-                                   (u_char *) tex.clut, tex.bpp == 0 ? 16 : tex.bpp == 1 ? 256 : 0,
-                                   indexed && tex.swizzled != 0, decoded)) {
+            if (PortDecodeTexture(tex.bpp, tex.width, tex.height, levels, tex.image[1] != nullptr ? 3 : 1,
+                                  (u_char *) tex.clut, tex.bpp == 0 ? 16 : tex.bpp == 1 ? 256 : 0,
+                                  indexed && tex.swizzled != 0, decoded)) {
+                LocalizeTexture(tex.name, decoded);
+                caption::PreparePainted(tex.name, decoded);
+                MakeGroundPeriodic(tex.name, decoded);
+                DumpTexture(tex.name, decoded);
+                tbp = PortCreateTextureAt(want_tbp, decoded, PortTextureOwner::Manager, want_cbp, &cbp);
+                textures++;
+                bound = true;
+            } else {
                 std::fprintf(stderr, "texture rebuild: %s would not decode\n", tex.name);
                 failed++;
-                continue;
             }
-            LocalizeTexture(tex.name, decoded);
-            caption::PreparePainted(tex.name, decoded);
-            MakeGroundPeriodic(tex.name, decoded);
-            DumpTexture(tex.name, decoded);
-            tbp = PortCreateTextureAt(want_tbp, decoded, PortTextureOwner::Manager, want_cbp, &cbp);
-            textures++;
-        } else if (const PortTextureSnapshot *snap = FindSnapshot(snapshots, tex.name)) {
-            PortDecodedTexture decoded;
-            size_t             logical = static_cast<size_t>(tex.width) * static_cast<size_t>(tex.height) *
-                             (snap->indexed ? 1u : 4u);
-            if (snap->pixels.size() == logical && tex.width > 0 && tex.height > 0) {
-                decoded.width = static_cast<unsigned>(tex.width);
-                decoded.height = static_cast<unsigned>(tex.height);
-            } else {
-                decoded.width = snap->width;
-                decoded.height = snap->height;
-            }
-            decoded.format = snap->indexed ? gfx::TextureFormat::Index8 : gfx::TextureFormat::Rgba8;
-            decoded.four_bit = false;
-            decoded.levels.push_back(snap->pixels);
-            decoded.palette = snap->palette;
-            tbp = PortCreateTextureAt(want_tbp, decoded, PortTextureOwner::Manager, want_cbp, &cbp);
-            from_snap++;
-        } else if (tex.bpp < 2) {
+        }
+        if (!bound && tex.bpp < 2) {
             PortDecodedTexture blank;
             blank.width = static_cast<unsigned>(tex.width);
             blank.height = static_cast<unsigned>(tex.height);
@@ -626,7 +641,8 @@ void TextureRebuild(const std::vector<PortTextureSnapshot> &snapshots) {
             blank.levels.emplace_back(static_cast<size_t>(tex.width) * tex.height, 0);
             tbp = PortCreateTextureAt(want_tbp, blank, PortTextureOwner::Manager, want_cbp, &cbp);
             targets++;
-        } else {
+            bound = true;
+        } else if (!bound) {
             tbp = PortRegisterNamedTargetAt(want_tbp, tex.name, static_cast<unsigned>(tex.width),
                                             static_cast<unsigned>(tex.height), tex.bpp != 3, PortTextureOwner::Manager);
             targets++;

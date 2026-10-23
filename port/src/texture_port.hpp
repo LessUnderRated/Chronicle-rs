@@ -96,11 +96,12 @@ void PortReleaseKey(unsigned key);
 void PortReleaseOwner(PortTextureOwner owner);
 bool PortKeyLive(unsigned key);
 bool PortPaletteLive(unsigned key);
+bool PortKeyIsNamedTarget(unsigned key);
 // True when `tbp` is a live image of this size, and a named target's name matches `name`.
 bool PortImageMatches(unsigned tbp, unsigned width, unsigned height, std::string_view name);
 
-// Pixels of a manager texture the state cannot reach through CTexture::image (fixed sheets such as
-// the town cursor and HUD icons): a GPU readback taken at save, re-uploaded at load.
+// GPU pixels of a manager texture at save, so a boot load can restore sheets whose CTexture::image
+// still names a reused file buffer (cursor, HUD, stayframe) rather than the pixels that were drawn.
 struct PortTextureSnapshot {
     std::string               name;
     unsigned                  width = 0;
@@ -114,8 +115,8 @@ struct PortTextureSnapshot {
 void TextureCollectSnapshots(std::vector<PortTextureSnapshot> *out);
 
 // After a state restore: keep the GPU registry when the restored TBP0s are still live (a
-// same-session load), otherwise re-decode into those same keys so every restored TEX0 copy still
-// resolves. Snapshots fill in textures whose image pointers were never stored (EnterFixTexture).
+// same-session load), otherwise occupy those same keys from snapshots, then image pointers, then a
+// placeholder, so every restored TEX0 copy still resolves.
 void TextureRebuild(const std::vector<PortTextureSnapshot> &snapshots = {});
 
 // The GS local-to-local transfer MGMoveImage describes, in texels of the two images: TBP0/PSM of

@@ -407,3 +407,35 @@ TEST(TexDecode, RebuildKeepsSavedTbp0) {
     ASSERT_TRUE(PortKeyLive(tbp));
     ASSERT_TRUE(PortTextureFromTex0(saved, 0).valid);
 }
+
+TEST(TexDecode, RebuildUsesSnapshotWhenImageIsStale) {
+    TexEnv env;
+    Bytes  pixels(8 * 8 * 4, 0);
+    for (size_t i = 0; i < pixels.size(); i += 4) {
+        pixels[i + 1] = 255;
+        pixels[i + 3] = 0x80;
+    }
+    Bytes img = Img({{"menu", Tim2({TIM2_RGB32, 8, 8, {pixels}, {}, 0})}});
+    Enter(img, 16);
+    std::string name = "menu";
+    CTexture   *texture = TexManager.GetTexture(name.data(), -1);
+    ASSERT_TRUE(texture != nullptr && texture->image[0] != nullptr);
+
+    std::vector<PortTextureSnapshot> snaps;
+    TextureCollectSnapshots(&snaps);
+    bool found = false;
+    for (const PortTextureSnapshot &snap : snaps) {
+        found = found || snap.name == "menu";
+    }
+    ASSERT_TRUE(found);
+
+    std::memset(texture->image[0], 0, 8 * 8 * 4);
+    u_long saved = texture->tex0;
+    PortReleaseOwner(PortTextureOwner::Manager);
+    TextureRebuild(snaps);
+    ASSERT_TRUE(texture->tex0 == saved);
+    PortTextureRef ref = PortTextureFromCTexture(texture);
+    ASSERT_TRUE(ref.valid);
+    env.gfx.Frame(kWhite, [&] { env.Draw(ref, 0, 0, 100, 100, 0, 0, 8, 8); });
+    ASSERT_TRUE(env.gfx.PixelNear(50, 50, 0, 255, 0));
+}

@@ -475,6 +475,11 @@ bool PortPaletteLive(unsigned key) {
     return entry != nullptr && entry->kind == EntryKind::Palette;
 }
 
+bool PortKeyIsNamedTarget(unsigned key) {
+    const Entry *entry = Live(key);
+    return entry != nullptr && entry->kind == EntryKind::Image && !entry->target.empty();
+}
+
 bool PortImageMatches(unsigned tbp, unsigned width, unsigned height, std::string_view name) {
     const Entry *entry = Live(tbp);
     if (entry == nullptr || entry->kind != EntryKind::Image) {
