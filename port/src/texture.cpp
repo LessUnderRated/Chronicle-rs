@@ -515,27 +515,69 @@ static const PortTextureSnapshot *FindSnapshot(const std::vector<PortTextureSnap
     return nullptr;
 }
 
-// After a state restore the manager's own memory says every texture is entered, but this session's
-// registry holds none of them: the game believes it needs no re-entry, so nothing would draw. This
-// re-decodes and re-registers what the manager has, and points the restored TEX0s at the new keys —
-// they were right about everything else. Pixels are game memory the restore brought back, or a GPU
-// snapshot for fixed sheets that never copied their image into the staging buffer.
-void TextureRebuild(const std::vector<PortTextureSnapshot> &snapshots) {
-    PortReleaseOwner(PortTextureOwner::Manager);
-    int textures = 0;
-    int targets = 0;
-    int failed = 0;
-    int from_snap = 0;
+static void ApplyRestoredKeys(CTexture &tex, unsigned tbp, unsigned cbp, bool indexed) {
+    tex.tex0 = (tex.tex0 & ~(u_long) 0x3FFF) | tbp;
+    if (indexed) {
+        tex.tex0 = (tex.tex0 & ~((u_long) 0x3FFF << 37)) | ((u_long) cbp << 37);
+    }
+}
+
+// Same-session load: the GPU still holds every restored TBP0, including MGMoveImage copies the
+// CTexture staging buffer never saw. Wiping them and handing out new keys leaves every other
+// restored TEX0 (menu sheets, move destinations) pointing at nothing.
+static bool TextureRegistryStillHolds() {
+    int held = 0;
     for (int i = 0; i < 196; i++) {
         CTexture &tex = TexManager.textures[i];
         if (tex.name[0] == 0) {
             continue;
         }
+        unsigned    tbp = static_cast<unsigned>(tex.tex0 & 0x3FFF);
+        unsigned    width = i == 0 ? 640u : static_cast<unsigned>(tex.width);
+        unsigned    height = i == 0 ? static_cast<unsigned>(SCREEN_HALF_HEIGHT) : static_cast<unsigned>(tex.height);
+        const char *name = i == 0 ? "work" : tex.name;
+        if (!PortImageMatches(tbp, width, height, name)) {
+            return false;
+        }
+        if (i != 0 && tex.bpp < 2 && !PortPaletteLive(static_cast<unsigned>((tex.tex0 >> 37) & 0x3FFF))) {
+            return false;
+        }
+        held++;
+    }
+    return held > 0;
+}
+
+// After a state restore the manager's own memory says every texture is entered. A same-session
+// load still has those GPU keys; a boot load does not. Rebuild occupies the restored TBP0s so
+// every TEX0 copy the state brought back still names a live image. Pixels are game memory the
+// restore brought back, or a GPU snapshot for fixed sheets that never copied their image into
+// the staging buffer.
+void TextureRebuild(const std::vector<PortTextureSnapshot> &snapshots) {
+    if (TextureRegistryStillHolds()) {
+        std::fprintf(stderr, "texture rebuild: kept live registry\n");
+        return;
+    }
+    PortReleaseOwner(PortTextureOwner::Manager);
+    int textures = 0;
+    int targets = 0;
+    int failed = 0;
+    int from_snap = 0;
+    int rebound = 0;
+    for (int i = 0; i < 196; i++) {
+        CTexture &tex = TexManager.textures[i];
+        if (tex.name[0] == 0) {
+            continue;
+        }
+        unsigned want_tbp = static_cast<unsigned>(tex.tex0 & 0x3FFF);
+        unsigned want_cbp = static_cast<unsigned>((tex.tex0 >> 37) & 0x3FFF);
         if (i == 0) {
-            // "work", the frame-copy area the water samples: the fresh session's Initialize made
-            // the named target already, and the restored TEX0 names its key wrongly.
-            unsigned tbp = PortRegisterNamedTarget("work", 640, SCREEN_HALF_HEIGHT, true, PortTextureOwner::Manager);
-            tex.tex0 = SCE_GS_SET_TEX0(tbp, 10, 0, 10, 8, 1, 0, 0, 0, 0, 0, 0);
+            unsigned tbp =
+                PortRegisterNamedTargetAt(want_tbp, "work", 640, SCREEN_HALF_HEIGHT, true, PortTextureOwner::Manager);
+            if (tbp != want_tbp) {
+                tex.tex0 = SCE_GS_SET_TEX0(tbp, 10, 0, 10, 8, 1, 0, 0, 0, 0, 0, 0);
+            } else {
+                rebound++;
+            }
             targets++;
             continue;
         }
@@ -556,29 +598,47 @@ void TextureRebuild(const std::vector<PortTextureSnapshot> &snapshots) {
             caption::PreparePainted(tex.name, decoded);
             MakeGroundPeriodic(tex.name, decoded);
             DumpTexture(tex.name, decoded);
-            tbp = PortCreateTexture(decoded, PortTextureOwner::Manager, &cbp);
+            tbp = PortCreateTextureAt(want_tbp, decoded, PortTextureOwner::Manager, want_cbp, &cbp);
             textures++;
         } else if (const PortTextureSnapshot *snap = FindSnapshot(snapshots, tex.name)) {
             PortDecodedTexture decoded;
-            decoded.width = snap->width;
-            decoded.height = snap->height;
+            size_t             logical = static_cast<size_t>(tex.width) * static_cast<size_t>(tex.height) *
+                             (snap->indexed ? 1u : 4u);
+            if (snap->pixels.size() == logical && tex.width > 0 && tex.height > 0) {
+                decoded.width = static_cast<unsigned>(tex.width);
+                decoded.height = static_cast<unsigned>(tex.height);
+            } else {
+                decoded.width = snap->width;
+                decoded.height = snap->height;
+            }
             decoded.format = snap->indexed ? gfx::TextureFormat::Index8 : gfx::TextureFormat::Rgba8;
             decoded.four_bit = false;
             decoded.levels.push_back(snap->pixels);
             decoded.palette = snap->palette;
-            tbp = PortCreateTexture(decoded, PortTextureOwner::Manager, &cbp);
+            tbp = PortCreateTextureAt(want_tbp, decoded, PortTextureOwner::Manager, want_cbp, &cbp);
             from_snap++;
+        } else if (tex.bpp < 2) {
+            PortDecodedTexture blank;
+            blank.width = static_cast<unsigned>(tex.width);
+            blank.height = static_cast<unsigned>(tex.height);
+            blank.format = gfx::TextureFormat::Index8;
+            blank.four_bit = tex.bpp == 0;
+            blank.levels.emplace_back(static_cast<size_t>(tex.width) * tex.height, 0);
+            tbp = PortCreateTextureAt(want_tbp, blank, PortTextureOwner::Manager, want_cbp, &cbp);
+            targets++;
         } else {
-            tbp = PortCreatePlaceholder(tex.name, tex.width, tex.height, tex.bpp, PortTextureOwner::Manager, &cbp);
+            tbp = PortRegisterNamedTargetAt(want_tbp, tex.name, static_cast<unsigned>(tex.width),
+                                            static_cast<unsigned>(tex.height), tex.bpp != 3, PortTextureOwner::Manager);
             targets++;
         }
-        tex.tex0 = (tex.tex0 & ~(u_long) 0x3FFF) | tbp;
-        if (indexed) {
-            tex.tex0 = (tex.tex0 & ~((u_long) 0x3FFF << 37)) | ((u_long) cbp << 37);
+        if (tbp == want_tbp && (!indexed || cbp == want_cbp)) {
+            rebound++;
+        } else {
+            ApplyRestoredKeys(tex, tbp, cbp, indexed);
         }
     }
-    std::fprintf(stderr, "texture rebuild: %d textures, %d snapshots, %d targets, %d failed\n", textures, from_snap,
-                 targets, failed);
+    std::fprintf(stderr, "texture rebuild: %d textures, %d snapshots, %d targets, %d failed, %d rebound\n", textures,
+                 from_snap, targets, failed, rebound);
 }
 
 // Native textures occupy independent storage, so simulated PS2 VRAM overlap does not overwrite

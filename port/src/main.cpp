@@ -391,6 +391,9 @@ bool StateApplyPending() {
         }
         if (!save) {
             loaded = true;
+            if (!gfx::InFrame()) {
+                gfx::SetFrameLayout(Layout(ConfigGet()));
+            }
         }
     }
     return loaded;

@@ -378,3 +378,32 @@ TEST(TexDecode, MipmapsAsSupplied) {
     auto plain_info = gfx::GetTextureInfo(PortTextureFromCTexture(plain).binding.texture);
     ASSERT_TRUE(plain_info && plain_info->mip_levels == 1);
 }
+
+TEST(TexDecode, RebuildKeepsSavedTbp0) {
+    TexEnv env;
+    Bytes  pixels(8 * 8 * 4, 0);
+    for (size_t i = 0; i < pixels.size(); i += 4) {
+        pixels[i + 1] = 255;
+        pixels[i + 3] = 0x80;
+    }
+    Bytes img = Img({{"menu", Tim2({TIM2_RGB32, 8, 8, {pixels}, {}, 0})}});
+    Enter(img, 16);
+    std::string name = "menu";
+    CTexture   *texture = TexManager.GetTexture(name.data(), -1);
+    ASSERT_TRUE(texture != nullptr);
+    u_long   saved = texture->tex0;
+    unsigned tbp = static_cast<unsigned>(saved & 0x3FFF);
+    ASSERT_TRUE(PortKeyLive(tbp));
+
+    TextureRebuild();
+    ASSERT_TRUE(texture->tex0 == saved);
+    ASSERT_TRUE(PortKeyLive(tbp));
+    ASSERT_TRUE(PortTextureFromTex0(saved, 0).valid);
+
+    PortReleaseOwner(PortTextureOwner::Manager);
+    ASSERT_TRUE(!PortKeyLive(tbp));
+    TextureRebuild();
+    ASSERT_TRUE(texture->tex0 == saved);
+    ASSERT_TRUE(PortKeyLive(tbp));
+    ASSERT_TRUE(PortTextureFromTex0(saved, 0).valid);
+}

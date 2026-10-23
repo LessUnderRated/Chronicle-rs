@@ -89,12 +89,49 @@ unsigned AllocateKey(EntryKind kind, PortTextureOwner owner) {
     std::abort();
 }
 
+bool ClaimKey(unsigned key, EntryKind kind, PortTextureOwner owner) {
+    if (Reserved(key) || key >= kKeyCount) {
+        return false;
+    }
+    Entry *live = Live(key);
+    if (live != nullptr && live->owner != owner) {
+        return false;
+    }
+    if (live != nullptr) {
+        PortReleaseKey(key);
+    }
+    Entry &entry = Reg().entries[key];
+    entry = Entry{};
+    entry.kind = kind;
+    entry.owner = owner;
+    return true;
+}
+
+unsigned TakeKey(unsigned wanted, EntryKind kind, PortTextureOwner owner) {
+    if (ClaimKey(wanted, kind, owner)) {
+        return wanted;
+    }
+    return AllocateKey(kind, owner);
+}
+
 gfx::TextureHandle EntryTexture(const Entry &entry) {
     return entry.target.empty() ? entry.texture : gfx::FindNamedRenderTarget(entry.target);
 }
 
-unsigned RegisterPalette(const std::array<uint32_t, 256> &rgba, bool four_bit, PortTextureOwner owner) {
-    unsigned key = AllocateKey(EntryKind::Palette, owner);
+unsigned RegisterPaletteAt(unsigned wanted, const std::array<uint32_t, 256> &rgba, bool four_bit,
+                           PortTextureOwner owner) {
+    Entry *live = wanted < kKeyCount ? Live(wanted) : nullptr;
+    if (live != nullptr && live->kind == EntryKind::Palette && live->owner == owner && live->shadow) {
+        *live->shadow = rgba;
+        live->four_bit = four_bit;
+        live->width = four_bit ? 8 : 16;
+        live->height = four_bit ? 2 : 16;
+        if (live->texture != gfx::kNullTexture && RendererUp()) {
+            gfx::UpdatePalette(live->texture, rgba.data());
+        }
+        return wanted;
+    }
+    unsigned key = TakeKey(wanted, EntryKind::Palette, owner);
     Entry   &entry = Reg().entries[key];
     entry.shadow = std::make_unique<std::array<uint32_t, 256>>(rgba);
     entry.four_bit = four_bit;
@@ -108,6 +145,10 @@ unsigned RegisterPalette(const std::array<uint32_t, 256> &rgba, bool four_bit, P
         }
     }
     return key;
+}
+
+unsigned RegisterPalette(const std::array<uint32_t, 256> &rgba, bool four_bit, PortTextureOwner owner) {
+    return RegisterPaletteAt(0, rgba, four_bit, owner);
 }
 
 void ReportOnce(bool &reported, const char *what, unsigned src, unsigned dst) {
@@ -314,15 +355,16 @@ bool PortDecodeTexture(int bpp, int width, int height, const u_char *const *leve
     return true;
 }
 
-unsigned PortCreateTexture(const PortDecodedTexture &decoded, PortTextureOwner owner, unsigned *palette_key) {
+unsigned PortCreateTextureAt(unsigned key, const PortDecodedTexture &decoded, PortTextureOwner owner,
+                             unsigned palette_at, unsigned *palette_key) {
     if (palette_key) {
         *palette_key = 0;
     }
     if (decoded.levels.empty()) {
         return 0;
     }
-    unsigned key = AllocateKey(EntryKind::Image, owner);
-    Entry   &entry = Reg().entries[key];
+    unsigned used = TakeKey(key, EntryKind::Image, owner);
+    Entry   &entry = Reg().entries[used];
     entry.width = decoded.width;
     entry.height = decoded.height;
     entry.format = decoded.format;
@@ -344,27 +386,36 @@ unsigned PortCreateTexture(const PortDecodedTexture &decoded, PortTextureOwner o
         }
     }
     if (decoded.format == gfx::TextureFormat::Index8) {
-        unsigned palette = RegisterPalette(decoded.palette, decoded.four_bit, owner);
-        Reg().entries[key].palette = palette;
+        unsigned palette = RegisterPaletteAt(palette_at, decoded.palette, decoded.four_bit, owner);
+        Reg().entries[used].palette = palette;
         if (palette_key) {
             *palette_key = palette;
         }
     }
-    return key;
+    return used;
 }
 
-unsigned PortRegisterNamedTarget(std::string_view name, unsigned width, unsigned height, bool has_alpha,
-                                 PortTextureOwner owner) {
-    unsigned key = AllocateKey(EntryKind::Image, owner);
-    Entry   &entry = Reg().entries[key];
-    entry.target = name;
+unsigned PortCreateTexture(const PortDecodedTexture &decoded, PortTextureOwner owner, unsigned *palette_key) {
+    return PortCreateTextureAt(0, decoded, owner, 0, palette_key);
+}
+
+unsigned PortRegisterNamedTargetAt(unsigned key, std::string_view name, unsigned width, unsigned height, bool has_alpha,
+                                   PortTextureOwner owner) {
+    unsigned used = TakeKey(key, EntryKind::Image, owner);
+    Entry   &entry = Reg().entries[used];
+    entry.target = std::string(name);
     entry.width = width;
     entry.height = height;
     entry.has_alpha = has_alpha;
     if (RendererUp()) {
         gfx::NamedRenderTarget(name, width, height, has_alpha, false, MGPortFrameTarget(name));
     }
-    return key;
+    return used;
+}
+
+unsigned PortRegisterNamedTarget(std::string_view name, unsigned width, unsigned height, bool has_alpha,
+                                 PortTextureOwner owner) {
+    return PortRegisterNamedTargetAt(0, name, width, height, has_alpha, owner);
 }
 
 unsigned PortCreatePlaceholder(std::string_view name, unsigned width, unsigned height, int bpp,
@@ -417,6 +468,25 @@ void PortReleaseOwner(PortTextureOwner owner) {
 
 bool PortKeyLive(unsigned key) {
     return Live(key) != nullptr;
+}
+
+bool PortPaletteLive(unsigned key) {
+    const Entry *entry = Live(key);
+    return entry != nullptr && entry->kind == EntryKind::Palette;
+}
+
+bool PortImageMatches(unsigned tbp, unsigned width, unsigned height, std::string_view name) {
+    const Entry *entry = Live(tbp);
+    if (entry == nullptr || entry->kind != EntryKind::Image) {
+        return false;
+    }
+    if (entry->width != width || entry->height != height) {
+        return false;
+    }
+    if (!entry->target.empty()) {
+        return entry->target == name;
+    }
+    return true;
 }
 
 PortTextureRef PortTextureFromTex0(u_long tex0, u_long tex1) {
