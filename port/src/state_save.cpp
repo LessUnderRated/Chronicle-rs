@@ -28,7 +28,8 @@ namespace fs = std::filesystem;
 namespace {
 
 constexpr char kMagic[4] = {'D', 'C', 'S', 'T'};
-constexpr std::uint32_t kVersion = 5;
+constexpr std::uint32_t kVersion = 6;
+constexpr std::uint32_t kOldestVersion = 5;
 
 std::uint64_t Fingerprint(const unsigned char *bytes, std::size_t size) {
     std::uint64_t hash = 0xcbf29ce484222325;
@@ -383,6 +384,24 @@ bool GameStateSave(const std::filesystem::path &path, std::string *error) {
     } else {
         Put(file, SaveData, sizeof(CSaveData), error);
     }
+    std::vector<PortTextureSnapshot> snapshots;
+    TextureCollectSnapshots(&snapshots);
+    PutValue(file, snapshots.size(), error);
+    for (const PortTextureSnapshot &snap : snapshots) {
+        char name[32] = {};
+        std::strncpy(name, snap.name.c_str(), sizeof name - 1);
+        Put(file, name, sizeof name, error);
+        PutValue(file, snap.width, error);
+        PutValue(file, snap.height, error);
+        PutValue(file, static_cast<std::uint64_t>(snap.bpp), error);
+        PutValue(file, snap.indexed ? 1 : 0, error);
+        PutValue(file, snap.pixels.size(), error);
+        Put(file, snap.pixels.data(), snap.pixels.size(), error);
+        if (snap.indexed) {
+            Put(file, snap.palette.data(), snap.palette.size() * sizeof(uint32_t), error);
+        }
+    }
+    std::fprintf(stderr, "state save: %zu texture snapshots\n", snapshots.size());
     bool ok = std::fflush(file) == 0 && error->empty();
     std::fprintf(stderr, "state save: %lld bytes on disk\n", ok ? static_cast<long long>(std::ftell(file)) : -1LL);
     if (std::fclose(file) != 0) {
@@ -409,8 +428,9 @@ bool GameStateLoad(const std::filesystem::path &path, std::string *error) {
     std::uint64_t image_size = 0;
     std::uint64_t old_region = 0;
     bool ok = Get(file, magic, sizeof magic) && std::memcmp(magic, kMagic, sizeof magic) == 0 &&
-              GetValue(file, &version) && version == kVersion && GetValue(file, &fingerprint) &&
-              GetValue(file, &old_base) && GetValue(file, &image_size) && GetValue(file, &old_region);
+              GetValue(file, &version) && version >= kOldestVersion && version <= kVersion &&
+              GetValue(file, &fingerprint) && GetValue(file, &old_base) && GetValue(file, &image_size) &&
+              GetValue(file, &old_region);
     const char *section = "header";
     if (ok && ArenaRegionBase() == nullptr) {
         std::fclose(file);
@@ -561,9 +581,47 @@ bool GameStateLoad(const std::filesystem::path &path, std::string *error) {
             ok = Get(file, save_bytes.data(), save_size);
         }
     }
+    std::vector<PortTextureSnapshot> snapshots;
+    if (ok && version >= 6) {
+        std::uint64_t snap_count = 0;
+        ok = GetValue(file, &snap_count);
+        section = "textures";
+        if (ok && snap_count > 256) {
+            ok = false;
+        }
+        for (std::uint64_t i = 0; ok && i < snap_count; i++) {
+            PortTextureSnapshot snap;
+            char                name[32] = {};
+            std::uint64_t       width = 0;
+            std::uint64_t       height = 0;
+            std::uint64_t       bpp = 0;
+            std::uint64_t       indexed = 0;
+            std::uint64_t       pixels = 0;
+            ok = Get(file, name, sizeof name) && GetValue(file, &width) && GetValue(file, &height) &&
+                 GetValue(file, &bpp) && GetValue(file, &indexed) && GetValue(file, &pixels);
+            if (!ok || pixels > (1u << 26) || width > 4096 || height > 4096) {
+                ok = false;
+                break;
+            }
+            name[31] = 0;
+            snap.name = name;
+            snap.width = static_cast<unsigned>(width);
+            snap.height = static_cast<unsigned>(height);
+            snap.bpp = static_cast<int>(bpp);
+            snap.indexed = indexed != 0;
+            snap.pixels.resize(pixels);
+            ok = Get(file, snap.pixels.data(), pixels);
+            if (ok && snap.indexed) {
+                ok = Get(file, snap.palette.data(), snap.palette.size() * sizeof(uint32_t));
+            }
+            if (ok) {
+                snapshots.push_back(std::move(snap));
+            }
+        }
+    }
     long long at = std::ftell(file);
-    std::fprintf(stderr, "state load parse: %llu visuals, save data %zu at %lld\n",
-                 static_cast<unsigned long long>(visuals.size()), save_bytes.size(), at);
+    std::fprintf(stderr, "state load parse: %llu visuals, save data %zu, %zu texture snapshots at %lld\n",
+                 static_cast<unsigned long long>(visuals.size()), save_bytes.size(), snapshots.size(), at);
     std::fclose(file);
     if (!ok) {
         if (error->empty()) {
@@ -609,7 +667,7 @@ bool GameStateLoad(const std::filesystem::path &path, std::string *error) {
     // The game's memory says every model's VU data is built, but this session's records of them
     // are gone: rebuilt from the records the state carried, after the textures their materials
     // name. The blocks already hold their tags.
-    TextureRebuild();
+    TextureRebuild(snapshots);
     Draw3DClearVisuals();
     std::size_t vertices = 0;
     for (const VisualRecord &record : visuals) {

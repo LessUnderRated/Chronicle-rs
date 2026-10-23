@@ -6,6 +6,7 @@
 
 #include <array>
 #include <cstdint>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -87,9 +88,24 @@ void PortReleaseKey(unsigned key);
 void PortReleaseOwner(PortTextureOwner owner);
 bool PortKeyLive(unsigned key);
 
+// Pixels of a manager texture the state cannot reach through CTexture::image (fixed sheets such as
+// the town cursor and HUD icons): a GPU readback taken at save, re-uploaded at load.
+struct PortTextureSnapshot {
+    std::string               name;
+    unsigned                  width = 0;
+    unsigned                  height = 0;
+    int                       bpp = 0;
+    std::vector<uint8_t>      pixels;
+    std::array<uint32_t, 256> palette = {};
+    bool                      indexed = false;
+};
+
+void TextureCollectSnapshots(std::vector<PortTextureSnapshot> *out);
+
 // After a state restore: re-decodes and re-registers every texture the manager holds, and points
-// the restored TEX0s at the new keys.
-void TextureRebuild();
+// the restored TEX0s at the new keys. Snapshots fill in textures whose image pointers were never
+// stored (EnterFixTexture).
+void TextureRebuild(const std::vector<PortTextureSnapshot> &snapshots = {});
 
 // The GS local-to-local transfer MGMoveImage describes, in texels of the two images: TBP0/PSM of
 // each side. Images copy on the renderer; palettes copy their CPU shadow in CLUT image positions

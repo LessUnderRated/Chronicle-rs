@@ -9,6 +9,7 @@
 
 #include "caption_text.hpp"
 #include "dataalloc.hpp"
+#include "gfx/gfx.hpp"
 #include "localize_texture.hpp"
 #include "mglib.hpp"
 #include "texture_port.hpp"
@@ -273,7 +274,17 @@ void Enter(CTextureManager &manager, EnterMode mode, int block, char *name, u_ch
         if (image == 0 ? psm != SCE_GS_PSMCT32 : indexed) {
             manager.vram_fix -= 32;
         }
-        if (image != 0 && !indexed) {
+        if (image != 0) {
+            // So a state restore can re-decode: retail uploaded from the caller's buffer and never
+            // copied it into the staging area.
+            tex->image[0] = (u_int *) image;
+            if (mipmap) {
+                tex->image[1] = (u_int *) mip1;
+                tex->image[2] = (u_int *) mip2;
+            }
+            tex->clut = indexed ? (u_int *) clut : nullptr;
+            tex->swizzled = swizzled;
+        } else if (!indexed) {
             tex->clut = 0;
         }
     } else {
@@ -465,15 +476,56 @@ PORT_OVERRIDE void CTextureManager::EnterFixTextureZ(u_char *buffer) {
     tex->tex0 = SCE_GS_SET_TEX0(tbp, 10, kPsmT8H, 10, 8, 1, 0, cbp, 0, 0, 0, 1);
 }
 
+void TextureCollectSnapshots(std::vector<PortTextureSnapshot> *out) {
+    out->clear();
+    for (int i = 1; i < 196; i++) {
+        CTexture &tex = TexManager.textures[i];
+        if (tex.name[0] == 0 || tex.image[0] != nullptr) {
+            continue;
+        }
+        PortTextureRef ref = PortTextureFromCTexture(&tex);
+        if (!ref.valid) {
+            continue;
+        }
+        PortTextureSnapshot snap;
+        snap.name = tex.name;
+        snap.bpp = tex.bpp;
+        snap.indexed = tex.bpp < 2;
+        uint32_t width = 0;
+        uint32_t height = 0;
+        if (!gfx::ReadbackTexture(ref.binding.texture, snap.pixels, width, height) || width == 0 || height == 0) {
+            continue;
+        }
+        snap.width = width;
+        snap.height = height;
+        if (snap.indexed) {
+            unsigned cbp = (tex.tex0 >> 37) & 0x3FFF;
+            PortPaletteEntries(cbp, snap.palette.data());
+        }
+        out->push_back(std::move(snap));
+    }
+}
+
+static const PortTextureSnapshot *FindSnapshot(const std::vector<PortTextureSnapshot> &snapshots, const char *name) {
+    for (const PortTextureSnapshot &snap : snapshots) {
+        if (snap.name == name) {
+            return &snap;
+        }
+    }
+    return nullptr;
+}
+
 // After a state restore the manager's own memory says every texture is entered, but this session's
 // registry holds none of them: the game believes it needs no re-entry, so nothing would draw. This
 // re-decodes and re-registers what the manager has, and points the restored TEX0s at the new keys —
-// they were right about everything else. Pixels are game memory the restore brought back.
-void TextureRebuild() {
+// they were right about everything else. Pixels are game memory the restore brought back, or a GPU
+// snapshot for fixed sheets that never copied their image into the staging buffer.
+void TextureRebuild(const std::vector<PortTextureSnapshot> &snapshots) {
     PortReleaseOwner(PortTextureOwner::Manager);
     int textures = 0;
     int targets = 0;
     int failed = 0;
+    int from_snap = 0;
     for (int i = 0; i < 196; i++) {
         CTexture &tex = TexManager.textures[i];
         if (tex.name[0] == 0) {
@@ -487,13 +539,10 @@ void TextureRebuild() {
             targets++;
             continue;
         }
-        bool    indexed = tex.bpp < 2;
+        bool     indexed = tex.bpp < 2;
         unsigned cbp = 0;
         unsigned tbp;
-        if (tex.image[0] == nullptr) {
-            tbp = PortCreatePlaceholder(tex.name, tex.width, tex.height, tex.bpp, PortTextureOwner::Manager, &cbp);
-            targets++;
-        } else {
+        if (tex.image[0] != nullptr) {
             const u_char      *levels[3] = {(u_char *) tex.image[0], (u_char *) tex.image[1], (u_char *) tex.image[2]};
             PortDecodedTexture decoded;
             if (!PortDecodeTexture(tex.bpp, tex.width, tex.height, levels, tex.image[1] != nullptr ? 3 : 1,
@@ -509,13 +558,27 @@ void TextureRebuild() {
             DumpTexture(tex.name, decoded);
             tbp = PortCreateTexture(decoded, PortTextureOwner::Manager, &cbp);
             textures++;
+        } else if (const PortTextureSnapshot *snap = FindSnapshot(snapshots, tex.name)) {
+            PortDecodedTexture decoded;
+            decoded.width = snap->width;
+            decoded.height = snap->height;
+            decoded.format = snap->indexed ? gfx::TextureFormat::Index8 : gfx::TextureFormat::Rgba8;
+            decoded.four_bit = false;
+            decoded.levels.push_back(snap->pixels);
+            decoded.palette = snap->palette;
+            tbp = PortCreateTexture(decoded, PortTextureOwner::Manager, &cbp);
+            from_snap++;
+        } else {
+            tbp = PortCreatePlaceholder(tex.name, tex.width, tex.height, tex.bpp, PortTextureOwner::Manager, &cbp);
+            targets++;
         }
         tex.tex0 = (tex.tex0 & ~(u_long) 0x3FFF) | tbp;
         if (indexed) {
             tex.tex0 = (tex.tex0 & ~((u_long) 0x3FFF << 37)) | ((u_long) cbp << 37);
         }
     }
-    std::fprintf(stderr, "texture rebuild: %d textures, %d targets, %d failed\n", textures, targets, failed);
+    std::fprintf(stderr, "texture rebuild: %d textures, %d snapshots, %d targets, %d failed\n", textures, from_snap,
+                 targets, failed);
 }
 
 // Native textures occupy independent storage, so simulated PS2 VRAM overlap does not overwrite
