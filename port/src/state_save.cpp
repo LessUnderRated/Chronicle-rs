@@ -263,11 +263,14 @@ bool GetValue(std::FILE *file, std::uint64_t *value) {
 // Shifts every 8-byte value that named the saved image by the base difference: a vtable pointer, a
 // static string, a function pointer. Nothing else in the game's memory lands in the image's range
 // (the game's numbers are small, its doubles far from a code address), so the scan is exact.
+// `origin` is the image or arena address of bytes[0]: layout-table ranges can start 4-byte-aligned,
+// and a scan from the buffer's start would miss every real pointer and rewrite the wrong slots.
 std::size_t Rebase(unsigned char *bytes, std::size_t size, std::uint64_t old_base, std::uint64_t new_base,
-                   std::uint64_t image_size) {
+                   std::uint64_t image_size, std::uint64_t origin) {
     std::uint64_t delta = new_base - old_base;
     std::size_t   rebased = 0;
-    for (std::size_t i = 0; i + 8 <= size; i += 8) {
+    std::size_t   i = (origin & 7) ? 8 - (origin & 7) : 0;
+    for (; i + 8 <= size; i += 8) {
         std::uint64_t value = 0;
         std::memcpy(&value, bytes + i, 8);
         if (value >= old_base && value - old_base < image_size) {
@@ -646,7 +649,8 @@ bool GameStateLoad(const std::filesystem::path &path, std::string *error) {
         ArenaBlockRestore(reinterpret_cast<const void *>(module.base + blocks[i].owner_offset), blocks[i].offset,
                           blocks[i].usable, blocks[i].lead, block_contents[i].data(), block_contents[i].size());
         if (fingerprint != 0) {
-            rebased += Rebase(ArenaRegionBase() + blocks[i].offset, blocks[i].usable, old_base, module.base, image_size);
+            rebased += Rebase(ArenaRegionBase() + blocks[i].offset, blocks[i].usable, old_base, module.base, image_size,
+                              reinterpret_cast<std::uint64_t>(ArenaRegionBase()) + blocks[i].offset);
         }
     }
     std::vector<const void *> keep;
@@ -656,7 +660,8 @@ bool GameStateLoad(const std::filesystem::path &path, std::string *error) {
     ArenaZeroOtherBlocks(keep.data(), keep.size());
     for (std::size_t i = 0; i < chunks.size(); i++) {
         if (fingerprint != 0) {
-            rebased += Rebase(contents[i].data(), contents[i].size(), old_base, module.base, image_size);
+            rebased += Rebase(contents[i].data(), contents[i].size(), old_base, module.base, image_size,
+                              old_base + chunks[i].offset);
         }
         std::memcpy(reinterpret_cast<void *>(module.base + chunks[i].offset), contents[i].data(), contents[i].size());
     }

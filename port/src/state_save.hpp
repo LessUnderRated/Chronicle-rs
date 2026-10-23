@@ -13,7 +13,8 @@
 //     table, so a state carries it as its own blob;
 //   - the game's globals are recorded at offsets from the code image's base, and a load rewrites
 //     the 8-byte values that named the old image by the base difference (a vtable pointer, a static
-//     string, a function pointer);
+//     string, a function pointer), scanning at 8-byte image alignment even when a table range
+//     starts four bytes off;
 //   - the host's own globals — the renderer's, the texture registry's, this module's — are not in
 //     the state at all: they belong to the running session, whose native heap the restored game
 //     cannot know. What they cache of the game (textures, banks) the game rebuilds as it runs.
