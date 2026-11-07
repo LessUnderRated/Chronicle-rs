@@ -1,0 +1,14 @@
+# Disabled: APKs are built locally (`cd android && ./gradlew assembleRelease`) and published with
+# android/publish.sh. GitHub Actions is not used for Android any more. See docs/ANDROID.md.
+name: Android
+
+on:
+  workflow_dispatch:
+
+jobs:
+  disabled:
+    name: disabled (local publish.sh instead)
+    if: false
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Android CI is off; build and publish locally."

@@ -20,13 +20,25 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # darkcloud is position-independent (DC_LINK_OPTIONS below).
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+# The PS2's char is signed, as are x86's and Apple arm64's; Linux and Android on arm64 make it
+# unsigned, where the game's checks like `bank == -128` (the end of a sound table) never hold.
+add_compile_options(-fsigned-char)
 
 set(KZ_ROOT ${CMAKE_SOURCE_DIR}/tools/kazarov)
 if(NOT EXISTS ${KZ_ROOT}/include/kazarov/port.h)
     message(FATAL_ERROR "${KZ_ROOT} is empty: run git submodule update --init tools/kazarov")
 endif()
 
+# android/patches: what the Android build needs of Kazarov before Kazarov has it. DC_KAZAROV_PATCHES
+# builds a PC port with them too, to run Kazarov's tests against them.
+option(DC_KAZAROV_PATCHES "Build Kazarov with android/patches applied" OFF)
+if(ANDROID OR DC_KAZAROV_PATCHES)
+    include(${CMAKE_SOURCE_DIR}/android/kazarov.cmake)
+endif()
 include(${KZ_ROOT}/cmake/KazarovPort.cmake)
+if(ANDROID)
+    include(${CMAKE_SOURCE_DIR}/android/native.cmake)
+endif()
 
 # Python runs ${KZ_ROOT}/scripts/port_override.py.
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
@@ -113,6 +125,14 @@ target_compile_options(dc_options INTERFACE
 # arm64 clang fuses a*b+c into one rounding by default; x86-64 has no FMA in its
 # baseline. Off everywhere so the game's arithmetic rounds the same on both.
 target_compile_options(dc_options INTERFACE -ffp-contract=off)
+if(ANDROID)
+    # The NDK makes this warning an error; the game passes its message tables to printf as formats.
+    target_compile_options(dc_options INTERFACE -Wno-format-security)
+    # The NDK builds with _FORTIFY_SOURCE=2, whose checked copies stop the process on the game's own
+    # small overruns, harmless where it was written for: MakeMcIconSysInfo's strcpy of "PS2D" into a
+    # 4-byte field, the zero landing in the reserved field after it. The PC builds have no FORTIFY.
+    target_compile_options(dc_options INTERFACE -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0)
+endif()
 
 if(WIN32 AND (NOT MINGW OR NOT CMAKE_CXX_COMPILER_ID STREQUAL "Clang"))
     message(FATAL_ERROR "The Windows build requires clang/llvm-mingw")
@@ -202,6 +222,19 @@ target_compile_options(dc_port PRIVATE -Wall -Wno-mismatched-tags -Wno-unused-la
 if(WIN32)
     # The two aliases are /alternatename directives in port/src/linknames.cpp.
     set(DC_LINK_OPTIONS -fuse-ld=lld -Wl,--gc-sections -Wl,--error-limit=0)
+elseif(ANDROID)
+    # libmain.so: SDLActivity looks up SDL_main in it, and SetupActivity the JNI methods, all of which
+    # the Rust crate defines and nothing else calls, so the linker would leave them in its archive.
+    set(DC_LINK_OPTIONS -fuse-ld=lld -Wl,-z,separate-code -Wl,--gc-sections -Wl,--error-limit=0
+        -Wl,--defsym=draw_rect=draw_rect_store -Wl,--defsym=WorkBuffer__2=WorkBuffer
+        -Wl,--undefined=SDL_main
+        -Wl,--undefined=Java_io_github_lessunderrated_chronicle_SetupActivity_nativeOpenDisc
+        -Wl,--undefined=Java_io_github_lessunderrated_chronicle_SetupActivity_nativeIdentify
+        -Wl,--undefined=Java_io_github_lessunderrated_chronicle_SetupActivity_nativeExtract
+        -Wl,--undefined=JNI_OnLoad
+        -Wl,-z,max-page-size=16384
+        # The game's rand, srand and the like must win over bionic's, which load first.
+        -Wl,-Bsymbolic)
 elseif(APPLE)
     set(DC_LINK_OPTIONS -Wl,-dead_strip -Wl,-alias,_draw_rect_store,_draw_rect
         -Wl,-alias,_WorkBuffer,_WorkBuffer__2)
@@ -219,9 +252,29 @@ function(dc_link_game target)
     target_link_options(${target} PRIVATE ${DC_LINK_OPTIONS})
 endfunction()
 
-add_executable(darkcloud ${PORT_DIR}/main.cpp)
-set_target_properties(darkcloud PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
-dc_link_game(darkcloud)
+if(ANDROID)
+    add_library(darkcloud SHARED ${PORT_DIR}/main.cpp)
+    set_target_properties(darkcloud PROPERTIES OUTPUT_NAME main)
+    dc_link_game(darkcloud)
+    target_link_libraries(darkcloud PRIVATE chronicle_android android log)
+    # The state layout table (scripts/port/game_ranges.py): which of the image's writable globals
+    # are the game's, written as an APK asset from the link map, so a save state restores the game's
+    # globals and leaves the host session's alone.
+    target_link_options(darkcloud PRIVATE -Wl,-Map=${CMAKE_BINARY_DIR}/game_globals.map)
+    find_package(Python3 COMPONENTS Interpreter)
+    if(Python3_FOUND)
+        set(STATE_TABLE ${CMAKE_SOURCE_DIR}/android/app/src/main/assets/states_layout.bin)
+        add_custom_command(TARGET darkcloud POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_SOURCE_DIR}/android/app/src/main/assets
+            COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/scripts/port/game_ranges.py
+                    ${CMAKE_BINARY_DIR}/game_globals.map ${STATE_TABLE}
+            VERBATIM)
+    endif()
+else()
+    add_executable(darkcloud ${PORT_DIR}/main.cpp)
+    set_target_properties(darkcloud PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+    dc_link_game(darkcloud)
+endif()
 if(WIN32)
     target_link_options(darkcloud PRIVATE -municode)
     enable_language(RC)
@@ -258,4 +311,7 @@ if(DC_BUILD_TESTS)
     enable_testing()
     add_subdirectory(src/tests)
 endif()
-add_subdirectory(${CMAKE_SOURCE_DIR}/tools/dcdata ${CMAKE_BINARY_DIR}/tools/dcdata)
+# On Android the game's first-run screen extracts the disc; there is no shell to run dcdata from.
+if(NOT ANDROID)
+    add_subdirectory(${CMAKE_SOURCE_DIR}/tools/dcdata ${CMAKE_BINARY_DIR}/tools/dcdata)
+endif()

@@ -151,6 +151,8 @@ namespace {
 constexpr gfx::UiAnchor kStatusAnchor = {0x124, 0x1FC, 240.0f, 240.0f};
 // The mini map hangs under the floor plate.
 constexpr gfx::UiAnchor kMiniMapAnchor = gfx::UiAnchor::Side(1, -1);
+// The hint window, and the text it clips to itself.
+constexpr gfx::UiAnchor kHintAnchor = gfx::UiAnchor::Side(1, 1, true);
 
 float CharaHeight(CUserStatus *status) {
     float chara_height[6] = {16.0f, 14.0f, 16.0f, 16.0f, 18.0f, 15.0f};
@@ -664,6 +666,9 @@ PORT_OVERRIDE void DunMainDraw() {
             }
 
             if (mes_no != -1) {
+                // The dungeon's hints sit in the frame's bottom right corner: the window's corner in a
+                // wider one, with the rest of the HUD.
+                gfx::UiAnchorScope hint_anchor(kHintAnchor);
                 DngMes1.text_x = 0x136;
                 DngMes1.text_y = 0x154;
                 DngMes1.auto_pos = MES_POS_BOTTOM_RIGHT;

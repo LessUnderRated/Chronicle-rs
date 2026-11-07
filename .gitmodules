@@ -1,4 +1,9 @@
 [submodule "tools/kazarov"]
 	path = tools/kazarov
-	url = https://github.com/TheMoonPeople/Kazarov.git
-	branch = main
+	url = https://github.com/LessUnderRated/Kazarov.git
+	branch = chronicle-save-states
+[submodule "reference/doukutsu-rs"]
+	path = reference/doukutsu-rs
+	url = https://github.com/doukutsu-rs/doukutsu-rs.git
+	update = none
+	shallow = true

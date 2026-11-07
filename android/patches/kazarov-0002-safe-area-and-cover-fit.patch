@@ -1,0 +1,248 @@
+diff --git a/port/gfx/README.md b/port/gfx/README.md
+index b2fc05d..0b455f9 100644
+--- a/port/gfx/README.md
++++ b/port/gfx/README.md
+@@ -88,7 +88,9 @@ else is internal. No game header is reachable from here: `platform/`, `gfx/` and
+      instead covers the whole frame with an ordinary texture (a cutscene still, a full-screen
+      backdrop) is a cover: it is stretched to the target's edge on each axis the
+      target shows past its frame, so a 4:3 still fills a wider window rather than leaving its sides
+-     bare. Fades, however tiled, full-frame fills and bands, the previous-frame feedback and frame
++     bare (with `FrameLayout::cover` `CoverMode::Fit` it keeps the frame's shape instead, and
++     black bars, untextured and drawn with the cover's state and alpha so they fade with it, fill
++     the target past it: for a window much wider than 4:3, where stretching shows). Fades, however tiled, full-frame fills and bands, the previous-frame feedback and frame
+      grabs drawn back therefore reach the window's edges; HUD pieces (textured from ordinary
+      textures, and never covering the whole frame) and anything wholly outside the frame do not
+      grow. Nothing of a host list is carried:
+@@ -106,7 +108,9 @@ else is internal. No game header is reachable from here: `platform/`, `gfx/` and
+   against the anchor's four limits and moved, whole and unscaled, by the pixels between the UI
+   frame's edge and the edge of what the target shows on each side it falls to: a piece 40 units
+   from the frame's left edge lands 40 units from the window's. `UiAnchor::Side` sends every draw
+-  to one side or corner (an element made of many draws, the mini map); limits inside the frame
++  to one side or corner (an element made of many draws, the mini map). With `AspectMode::Fill` the
++  edge is that of the window's safe area (`SDL_GetWindowSafeArea`: clear of a display cutout and the
++  system's gesture edges), the window's own where it has none; limits inside the frame
+   split a panel whose pieces belong to different corners. The side is chosen when the draw is
+   made and travels with it in a display list; the shift is taken at render time, so it follows
+   the window and `ui_scale` (a HUD scaled past the window is pulled back to its edges). An
+diff --git a/port/gfx/draw.cpp b/port/gfx/draw.cpp
+index de1633c..7ed05a6 100644
+--- a/port/gfx/draw.cpp
++++ b/port/gfx/draw.cpp
+@@ -1,3 +1,5 @@
++#include <SDL3/SDL.h>
++
+ #include <algorithm>
+ #include <cmath>
+ #include <cstring>
+@@ -214,22 +216,54 @@ VkRect2D ClearArea(const LogicalRect *rect, const Target &target) {
+     return ClipsToFrame(g.target) ? Intersect(area, FramePixels(target.mapping)) : area;
+ }
+ 
++// How far the window's safe area (SDL_GetWindowSafeArea: clear of a display cutout, the system's
++// bars and gesture edges) lies inside each edge of the main target, in its pixels. All zero for a
++// window without one, offscreen, and with AspectMode::Letterbox, which keeps the HUD in the frame.
++struct SafeInsets {
++    float left = 0.0f;
++    float top = 0.0f;
++    float right = 0.0f;
++    float bottom = 0.0f;
++};
++
++SafeInsets MainSafeInsets(const LogicalMapping &logical) {
++    SafeInsets insets;
++    if (g.offscreen || g.window == nullptr || !FillsWindow()) {
++        return insets;
++    }
++    SDL_Rect safe;
++    int      width = 0;
++    int      height = 0;
++    if (!SDL_GetWindowSafeArea(g.window, &safe) || !SDL_GetWindowSize(g.window, &width, &height) || width <= 0 ||
++        height <= 0) {
++        return insets;
++    }
++    float to_x = static_cast<float>(logical.pixel_width) / static_cast<float>(width);
++    float to_y = static_cast<float>(logical.pixel_height) / static_cast<float>(height);
++    insets.left = std::max(0, safe.x) * to_x;
++    insets.top = std::max(0, safe.y) * to_y;
++    insets.right = std::max(0, width - safe.x - safe.w) * to_x;
++    insets.bottom = std::max(0, height - safe.y - safe.h) * to_y;
++    return insets;
++}
++
+ // The pixels an anchored UI draw moves by: on each anchored axis, from the UI frame's edge to the
+-// edge of what the main target shows.
++// edge of what the main target shows, inside its safe area.
+ void UiSideShift(UiSide side, const LogicalMapping &logical, const LogicalMapping &ui, float &dx, float &dy) {
+     LogicalRect visible = VisibleLogicalRect(kMainTarget);
++    SafeInsets  safe = MainSafeInsets(logical);
+     dx = 0.0f;
+     dy = 0.0f;
+     if (side.x < 0) {
+-        dx = visible.x * logical.scale_x + logical.offset_x - ui.offset_x;
++        dx = visible.x * logical.scale_x + logical.offset_x + safe.left - ui.offset_x;
+     } else if (side.x > 0) {
+-        dx = (visible.x + visible.w) * logical.scale_x + logical.offset_x -
++        dx = (visible.x + visible.w) * logical.scale_x + logical.offset_x - safe.right -
+              (g.config.logical_width * ui.scale_x + ui.offset_x);
+     }
+     if (side.y < 0) {
+-        dy = visible.y * logical.scale_y + logical.offset_y - ui.offset_y;
++        dy = visible.y * logical.scale_y + logical.offset_y + safe.top - ui.offset_y;
+     } else if (side.y > 0) {
+-        dy = (visible.y + visible.h) * logical.scale_y + logical.offset_y -
++        dy = (visible.y + visible.h) * logical.scale_y + logical.offset_y - safe.bottom -
+              (g.config.logical_height * ui.scale_y + ui.offset_y);
+     }
+     dx = std::round(dx);
+@@ -655,15 +689,20 @@ uint32_t CoveredAxes(const Corners &q, const LogicalRect &frame) {
+ // leaving the frame's sides bare. An image of the frame is flanked instead (its own sides show) and
+ // an untextured span is solid either way, so neither stretches. Empty when nothing is stretched, so
+ // the caller draws the vertices as given.
++//
++// With CoverMode::Fit the cover is not moved; bars gets black quads from it to the target's edge on
++// those axes, in the cover's own alpha, to draw untextured with the cover's state.
+ std::vector<Vertex2D> StretchFrameCovers(Primitive primitive, std::span<const Vertex2D> vertices,
+                                          const TextureBinding &binding, uint32_t extend,
+-                                         const LogicalRect &frame, const LogicalMapping &mapping) {
++                                         const LogicalRect &frame, const LogicalMapping &mapping,
++                                         std::vector<Vertex2D> *bars = nullptr) {
+     std::vector<Vertex2D> stretched;
+     if (extend == 0 || binding.texture == kNullTexture || TextureAxes(binding) != 0 ||
+         (primitive != Primitive::Quads && !(primitive == Primitive::TriangleStrip && vertices.size() == 4))) {
+         return stretched;
+     }
+     LogicalRect bounds = TargetBounds(mapping);
++    bool        fit = g.layout.cover == CoverMode::Fit && bars != nullptr;
+     bool        any = false;
+     stretched.assign(vertices.begin(), vertices.end());
+     for (size_t first = 0; first + 4 <= vertices.size(); first += 4) {
+@@ -671,6 +710,31 @@ std::vector<Vertex2D> StretchFrameCovers(Primitive primitive, std::span<const Ve
+         if (!AxisAligned(&vertices[first], q) || CoveredAxes(q, frame) != (kAxisX | kAxisY)) {
+             continue;
+         }
++        if (fit) {
++            uint8_t alpha = vertices[first].color[3];
++            auto    bar = [&](float x0, float y0, float x1, float y1) {
++                if (x1 <= x0 || y1 <= y0) {
++                    return;
++                }
++                for (auto [x, y] : {std::pair{x0, y0}, {x1, y0}, {x1, y1}, {x0, y1}}) {
++                    bars->push_back(Vertex2D{x, y, vertices[first].z, 0.0f, 0.0f, {0, 0, 0, alpha}});
++                }
++            };
++            float top = bounds.y;
++            float bottom = bounds.y + bounds.h;
++            if (extend & kAxisY) {
++                bar(q.x[0], top, q.x[1], q.y[0]);
++                bar(q.x[0], q.y[1], q.x[1], bottom);
++            } else {
++                top = q.y[0];
++                bottom = q.y[1];
++            }
++            if (extend & kAxisX) {
++                bar(bounds.x, top, q.x[0], bottom);
++                bar(q.x[1], top, bounds.x + bounds.w, bottom);
++            }
++            continue;
++        }
+         for (int i = 0; i < 4; i++) {
+             Vertex2D &vertex = stretched[first + i];
+             if (extend & kAxisX) {
+@@ -1006,14 +1070,18 @@ void Draw2DSided(Primitive primitive, std::span<const Vertex2D> vertices, const
+     }
+     LogicalRect               frame = LogicalFrame(g.target);
+     std::vector<Vertex2D>     stretched;
++    std::vector<Vertex2D>     bars;
+     std::span<const Vertex2D> draw = vertices;
+     if (!g.host_draws) {
+-        stretched = StretchFrameCovers(primitive, vertices, binding, extend, frame, mapping);
++        stretched = StretchFrameCovers(primitive, vertices, binding, extend, frame, mapping, &bars);
+         if (!stretched.empty()) {
+             draw = stretched;
+         }
+     }
+     DrawPrepared(primitive, draw, binding, state, ui);
++    if (!bars.empty()) {
++        DrawPrepared(Primitive::Quads, bars, {}, state, ui);
++    }
+     if (uint32_t axes = extend & TextureAxes(binding); axes != 0 && g.in_frame && !g.host_draws) {
+         std::vector<Vertex2D> flanks = FrameFlanks(primitive, vertices, axes, frame, mapping);
+         if (!flanks.empty()) {
+diff --git a/port/gfx/gfx.hpp b/port/gfx/gfx.hpp
+index 5a27ece..54843aa 100644
+--- a/port/gfx/gfx.hpp
++++ b/port/gfx/gfx.hpp
+@@ -28,10 +28,24 @@ enum class AspectMode : uint8_t {
+     Letterbox,
+ };
+ 
++// For code built against Kazarov before FrameLayout::cover.
++#define KZ_GFX_COVER_MODE 1
++
++// With AspectMode::Fill, what becomes of a 2D draw that covers the whole frame with an ordinary
++// texture (a cutscene still, a full-screen backdrop) where the window shows past the frame.
++enum class CoverMode : uint8_t {
++    // Stretched to the window's edges.
++    Stretch,
++    // Kept at the frame's shape, with black at its sides drawn as the picture is (its alpha and
++    // blending), so a picture that fades fades its bars with it.
++    Fit,
++};
++
+ struct FrameLayout {
+     AspectMode aspect = AspectMode::Fill;
+     // 2D that tests no depth, scaled about the main target's centre.
+-    float ui_scale = 1.0f;
++    float     ui_scale = 1.0f;
++    CoverMode cover = CoverMode::Stretch;
+ };
+ 
+ // Which of the HUD's 2D keeps its distance to an edge of what the main target shows, instead of its
+diff --git a/port/tests/gfx_misc_test.cpp b/port/tests/gfx_misc_test.cpp
+index ec181ea..57afc04 100644
+--- a/port/tests/gfx_misc_test.cpp
++++ b/port/tests/gfx_misc_test.cpp
+@@ -180,3 +180,43 @@ TEST(GfxMisc, TextureReusingFrameTargetKeepsTexelCoordinates) {
+     EXPECT_TRUE(fixture.PixelNear(270, 210, 255, 255, 255));
+     EXPECT_FALSE(gfx::GetTextureInfo(texture)->frame_target);
+ }
++
++// A picture covering the whole frame in a window twice as wide: stretched to the window's edges, or
++// with CoverMode::Fit kept at the frame's place with black bars beside it.
++TEST(GfxMisc, CoverFitKeepsTheFrameShape) {
++    GfxFixture fixture(1280, 480);
++    gfx::TextureHandle texture = gfx::CreateTexture({1, 1, gfx::TextureFormat::Rgba8, 1, true});
++    ASSERT_NE(texture, gfx::kNullTexture);
++    uint32_t white = Rgba(255, 255, 255);
++    ASSERT_TRUE(gfx::UpdateTexture(texture, 0, 0, 0, 1, 1, &white));
++    auto still = [&] {
++        gfx::TextureBinding binding;
++        binding.texture = texture;
++        auto quad = Quad(0, 0, 640, 480, {0x80, 0x80, 0x80, 0x80}, 0, 0, 1, 1);
++        gfx::Draw2D(gfx::Primitive::Quads, quad, binding, gfx::DrawState{});
++    };
++    const std::array<uint8_t, 4> blue = {0, 0, 0xFF, 0x80};
++
++    gfx::SetFrameLayout({gfx::AspectMode::Fill, 1.0f, gfx::CoverMode::Stretch});
++    fixture.Frame(blue, still);
++    EXPECT_TRUE(fixture.PixelNear(100, 240, 255, 255, 255)) << "stretched over the side";
++    EXPECT_TRUE(fixture.PixelNear(640, 240, 255, 255, 255));
++
++    gfx::SetFrameLayout({gfx::AspectMode::Fill, 1.0f, gfx::CoverMode::Fit});
++    fixture.Frame(blue, still);
++    EXPECT_TRUE(fixture.PixelNear(100, 240, 0, 0, 0)) << "a black bar on the left";
++    EXPECT_TRUE(fixture.PixelNear(1180, 240, 0, 0, 0)) << "and on the right";
++    EXPECT_TRUE(fixture.PixelNear(640, 240, 255, 255, 255)) << "the picture at the frame's place";
++    EXPECT_TRUE(fixture.PixelNear(330, 240, 255, 255, 255));
++    EXPECT_TRUE(fixture.PixelNear(310, 240, 0, 0, 0));
++
++    // A HUD piece that does not cover the frame grows no bars.
++    fixture.Frame(blue, [&] {
++        gfx::TextureBinding binding;
++        binding.texture = texture;
++        auto quad = Quad(0, 0, 100, 100, {0x80, 0x80, 0x80, 0x80}, 0, 0, 1, 1);
++        gfx::Draw2D(gfx::Primitive::Quads, quad, binding, gfx::DrawState{});
++    });
++    EXPECT_TRUE(fixture.PixelNear(100, 240, 0, 0, 255));
++    gfx::DestroyTexture(texture);
++}

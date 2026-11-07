@@ -312,9 +312,7 @@ void DrawVolume(const Volume &volume, const Projection &projection, const Render
 } // namespace
 
 // The shadow mesh's triangles, three model-space corners each, for the fast programs to extrude.
-PORT_OVERRIDE int CVisualShadow::CreateVUdataShadow(u_int *block, u_int *model_data) {
-    vu_data = block;
-    vu_size = kDraw3DBlockQuads;
+int BuildShadowVisual(u_int *block, u_int *model_data) {
     Draw3DVisual &visual = Draw3DRegisterVisual(block, false);
 
     MDT_HEADER    *model = reinterpret_cast<MDT_HEADER *>(model_data);
@@ -348,6 +346,12 @@ PORT_OVERRIDE int CVisualShadow::CreateVUdataShadow(u_int *block, u_int *model_d
             }
         }
     }
+    return kDraw3DBlockQuads;
+}
+
+PORT_OVERRIDE int CVisualShadow::CreateVUdataShadow(u_int *block, u_int *model_data) {
+    vu_data = block;
+    vu_size = BuildShadowVisual(block, model_data);
     return vu_size;
 }
 

@@ -4,6 +4,7 @@
 
 #include "draw3d.hpp"
 #include "mglib.hpp"
+#include "platform/config.hpp"
 #include "renderinfo.hpp"
 #include "screen.hpp"
 #include "texture.hpp"
@@ -261,20 +262,26 @@ PORT_OVERRIDE extern "C" int DrawVu1__6CWaterFP10RenderInfoP13sceVif1PacketP1(CW
             value = 1.0f;
         }
         gfx::DrawState state = Draw3DState(*info, false);
-        Refraction     refraction;
-        if (PrepareRefraction(refraction)) {
-            DrawRefracted(*water, refraction, *visual, constants, transform, state);
+        // video.water_flat: no frame copy at all, so the water shows only its own tint.
+        if (ConfigGet().water_flat) {
+            gfx::DrawMeshImmediate(visual->vertices, visual->indices, constants, gfx::TextureBinding{}, state,
+                                   &transform);
         } else {
-            PortTextureRef      copy = FrameCopy();
-            gfx::TextureBinding binding;
-            if (copy.valid && copy.binding.texture != gfx::CurrentRenderTarget() &&
-                copy.binding.texture != gfx::kMainTarget) {
-                binding = copy.binding;
-                binding.filter = gfx::Filter::Linear;
-                binding.wrap_u = gfx::Wrap::Clamp;
-                binding.wrap_v = gfx::Wrap::Clamp;
+            Refraction refraction;
+            if (PrepareRefraction(refraction)) {
+                DrawRefracted(*water, refraction, *visual, constants, transform, state);
+            } else {
+                PortTextureRef      copy = FrameCopy();
+                gfx::TextureBinding binding;
+                if (copy.valid && copy.binding.texture != gfx::CurrentRenderTarget() &&
+                    copy.binding.texture != gfx::kMainTarget) {
+                    binding = copy.binding;
+                    binding.filter = gfx::Filter::Linear;
+                    binding.wrap_u = gfx::Wrap::Clamp;
+                    binding.wrap_v = gfx::Wrap::Clamp;
+                }
+                gfx::DrawMeshImmediate(visual->vertices, visual->indices, constants, binding, state, &transform);
             }
-            gfx::DrawMeshImmediate(visual->vertices, visual->indices, constants, binding, state, &transform);
         }
     }
 

@@ -135,7 +135,7 @@ struct Draw3DVisual {
     gfx::MeshHandle            mesh = gfx::kNullMesh;
     std::vector<Draw3DStrip>   strips;
     std::vector<gfx::Vertex3D> vertices;
-    std::vector<uint32_t>      indices; // kept only for immediate (per-frame) visuals
+    std::vector<uint32_t>      indices;
     bool                       vertex_colour = false;
     bool                       immediate = false;
 };
@@ -146,9 +146,18 @@ Draw3DVisual *Draw3DFindVisual(const void *block);
 Draw3DVisual &Draw3DRegisterVisual(unsigned int *block, bool transient);
 // MGBeginFrame's: drops transient records and those whose block was cleared or reused.
 void Draw3DSweepVisuals();
+// The lasting records and the blocks they draw for, for the state to carry. The records are the
+// only copy of a model's built geometry: the game's model data is a scratch buffer long overwritten
+// by the time a state is taken.
+std::vector<std::pair<const void *, const Draw3DVisual *>> Draw3DLastingVisuals();
+// Forgets every record, so a state restore's rebuilds start clean.
+void Draw3DClearVisuals();
 // Uploads the record's vertices and indices as a mesh, or keeps them for immediate draws.
 void Draw3DFinishVisual(Draw3DVisual &visual);
 void Draw3DDrawVisual(const Draw3DVisual &visual, const float model[4][4], const RenderInfo &info, int program);
 
 // Strip index order into a triangle list, every triangle wound as the strip's first.
 void Draw3DStripToList(std::vector<uint32_t> &indices, uint32_t first_vertex, uint32_t count);
+
+// The shadow visual's build, shared by the game's own entry and the state restore's rebuild.
+int BuildShadowVisual(unsigned int *block, unsigned int *model_data);

@@ -324,6 +324,56 @@ TEST(DataExtract, FromDirectory) {
     fs::remove_all(dir);
 }
 
+TEST(DataExtract, ReadsTheBootSerial) {
+    EXPECT_EQ(dcdata::ParseBootSerial("BOOT2 = cdrom0:\\SCUS_971.11;1\r\nVER = 1.02\r\nVMODE = NTSC\r\n"), "SCUS-97111");
+    EXPECT_EQ(dcdata::ParseBootSerial("VER = 1.00\nboot2=cdrom0:\\SCPS_150.04;1\n"), "SCPS-15004");
+    EXPECT_EQ(dcdata::ParseBootSerial("  BOOT2 = cdrom0:\\SCES_502.95;1"), "SCES-50295");
+    EXPECT_EQ(dcdata::ParseBootSerial("BOOT = cdrom:\\SLUS_000.01;1"), "");
+    EXPECT_EQ(dcdata::ParseBootSerial("BOOT2 = cdrom0:\\MAIN.ELF;1"), "");
+    EXPECT_EQ(dcdata::ParseBootSerial(""), "");
+
+    EXPECT_EQ(dcdata::RegionOfSerial("SCUS-97111"), dcdata::Region::Usa);
+    EXPECT_EQ(dcdata::RegionOfSerial("SCPS-15004"), dcdata::Region::Japan);
+    EXPECT_EQ(dcdata::RegionOfSerial("SCES-50295"), dcdata::Region::Europe);
+    EXPECT_EQ(dcdata::RegionOfSerial(""), dcdata::Region::Unknown);
+}
+
+// A Japanese disc the release table lacks carries Japanese alone, whatever its layout.
+TEST(DataExtract, JapaneseDiscIsJapanese) {
+    fs::path    dir = TempDir("extract_jpn");
+    Disc        disc = StandardDisc();
+    std::string cnf = "BOOT2 = cdrom0:\\SCPS_150.04;1\r\nVER = 1.00\r\nVMODE = NTSC\r\n";
+    WriteBytes(dir / "iso/DATA.DAT", disc.dat);
+    WriteBytes(dir / "iso/DATA.HD2", disc.hd2);
+    WriteBytes(dir / "iso/SYSTEM.CNF", Bytes(cnf.begin(), cnf.end()));
+
+    dcdata::DiscInfo info = dcdata::IdentifyDisc(dir / "iso");
+    EXPECT_EQ(info.serial, "SCPS-15004");
+    EXPECT_EQ(info.region, dcdata::Region::Japan);
+    EXPECT_EQ(info.release.languages, dcdata::JapaneseLanguages());
+    EXPECT_EQ(info.files, kStandardReachable);
+
+    dcdata::Extract(dcdata::OpenArchive(dir / "iso"), dir / "data", nullptr);
+    std::string languages = "{\"release\": \"Japanese release\", \"languages\": [0]}\n";
+    EXPECT_EQ(ReadBytes(dir / "data/languages.json"), Bytes(languages.begin(), languages.end()));
+    fs::remove_all(dir);
+}
+
+// Without a product code, the layout names the region.
+TEST(DataExtract, IdentifiesADiscWithoutSystemCnf) {
+    fs::path dir = TempDir("identify_plain");
+    Disc     disc = StandardDisc();
+    fs::path iso = WriteStandardIso(dir, disc);
+
+    dcdata::DiscInfo info = dcdata::IdentifyDisc(iso);
+    EXPECT_EQ(info.serial, "");
+    EXPECT_EQ(info.region, dcdata::Region::Europe);
+    EXPECT_EQ(info.files, kStandardReachable);
+    EXPECT_GT(info.bytes, 0u);
+    ASSERT_TRUE(Throws([&] { dcdata::IdentifyDisc(dir / "nothing.iso"); }, "neither a disc image"));
+    fs::remove_all(dir);
+}
+
 TEST(DataExtract, RejectsTruncation) {
     fs::path dir = TempDir("extract_cut");
     Disc     disc = StandardDisc();

@@ -438,8 +438,6 @@ void Draw3DFinishVisual(Draw3DVisual &visual) {
         return;
     }
     visual.mesh = gfx::CreateMesh(visual.vertices, visual.indices);
-    visual.indices.clear();
-    visual.indices.shrink_to_fit();
 }
 
 void Draw3DStripToList(std::vector<uint32_t> &indices, uint32_t first_vertex, uint32_t count) {
@@ -595,9 +593,17 @@ PORT_OVERRIDE int CVisualVu1::DrawVu1(u_int *packet, float (*matrix)[4], RenderI
 // Every {v, n, uv[, colour]} entry of a strip becomes one vertex; strips (GS prim 4) become lists
 // wound as their first triangle, other prims are lists already. A strip whose material is -1 keeps
 // the previous strip's material and texture, as VU1's memory did.
+// The build, without the visual object: the state restore runs it against the game memory the
+// restore brought back, whose object already holds vu_data and vu_size from the same build.
+int BuildMDTVisual(u_int *block, u_int *data, int unknown0, int unknown1);
+
 PORT_OVERRIDE int CVisualVu1::CreateVUdataFromMDT(u_int *block, u_int *data, int unknown0, int unknown1) {
     vu_data = block;
-    vu_size = kDraw3DBlockQuads;
+    vu_size = BuildMDTVisual(block, data, unknown0, unknown1);
+    return vu_size;
+}
+
+int BuildMDTVisual(u_int *block, u_int *data, int unknown0, int unknown1) {
     Draw3DVisual &visual = Draw3DRegisterVisual(block, false);
     MdtView       view = View(data);
     visual.vertex_colour = view.colour != nullptr;
@@ -663,7 +669,7 @@ PORT_OVERRIDE int CVisualVu1::CreateVUdataFromMDT(u_int *block, u_int *data, int
         }
     }
     Draw3DFinishVisual(visual);
-    return vu_size;
+    return kDraw3DBlockQuads;
 }
 
 // Retail rewrites positions, colours and materials in place after skinning, morphs and material
@@ -734,4 +740,25 @@ PORT_OVERRIDE int CVisualMDTVu1::RemakeData(u_int *block) {
         return 0;
     }
     return CreateVUdataFromMDTRemake(vu_data_buffer[DBuffID], data, 1);
+}
+
+std::vector<std::pair<const void *, const Draw3DVisual *>> Draw3DLastingVisuals() {
+    std::vector<std::pair<const void *, const Draw3DVisual *>> lasting;
+    for (const auto &entry : g_visuals) {
+        if (!entry.second->immediate) {
+            lasting.push_back({entry.first, entry.second.get()});
+        }
+    }
+    return lasting;
+}
+
+void Draw3DClearVisuals() {
+    for (const auto &entry : g_visuals) {
+        Release(*entry.second);
+    }
+    for (const auto &entry : g_transient) {
+        Release(*entry.second);
+    }
+    g_visuals.clear();
+    g_transient.clear();
 }

@@ -1,0 +1,178 @@
+diff --git a/port/gfx/renderer.cpp b/port/gfx/renderer.cpp
+index 3c1804e..c1779b0 100644
+--- a/port/gfx/renderer.cpp
++++ b/port/gfx/renderer.cpp
+@@ -2,6 +2,7 @@
+ #include <SDL3/SDL_vulkan.h>
+ 
+ #include <algorithm>
++#include <atomic>
+ #include <cmath>
+ #include <cstdarg>
+ #include <cstdio>
+@@ -396,6 +397,40 @@ void DestroySwapchainResources() {
+     g.swapchain.images.clear();
+ }
+ 
++#ifdef __ANDROID__
++// Android takes the window's surface away whenever the app leaves the screen and makes a new one
++// when it returns, which loses the VkSurfaceKHR made from the old one. SDL tells of the return on
++// the thread that runs the activity, so the next swapchain rebuild remakes the surface.
++std::atomic<bool> g_surface_stale{false};
++
++bool SDLCALL WatchForeground(void *, SDL_Event *event) {
++    if (event->type == SDL_EVENT_DID_ENTER_FOREGROUND) {
++        g_surface_stale = true;
++    }
++    return true;
++}
++
++bool RecreateSurface() {
++    vkDeviceWaitIdle(g.device);
++    DestroySwapchainResources();
++    if (g.swapchain.handle != VK_NULL_HANDLE) {
++        vkDestroySwapchainKHR(g.device, g.swapchain.handle, nullptr);
++        g.swapchain.handle = VK_NULL_HANDLE;
++    }
++    if (g.surface != VK_NULL_HANDLE) {
++        SDL_Vulkan_DestroySurface(g.instance, g.surface, nullptr);
++        g.surface = VK_NULL_HANDLE;
++    }
++    if (!SDL_Vulkan_CreateSurface(g.window, g.instance, nullptr, &g.surface)) {
++        Error("SDL_Vulkan_CreateSurface: %s", SDL_GetError());
++        g.surface = VK_NULL_HANDLE;
++        g_surface_stale = true;
++        return false;
++    }
++    return true;
++}
++#endif
++
+ bool CreateSwapchain() {
+     VkSurfaceCapabilitiesKHR capabilities;
+     Check(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(g.physical_device, g.surface, &capabilities),
+@@ -436,7 +471,35 @@ bool CreateSwapchain() {
+     info.imageArrayLayers = 1;
+     info.imageUsage = VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+     info.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
++#ifdef __ANDROID__
++    // A landscape game on a phone, whose panel is portrait, is offered ROTATE_90: the app would rotate
++    // its own image. The renderer does not, so the compositor does, as Android's guide describes for
++    // an app that does not pre-rotate. The image is then the window's shape, whichever orientation
++    // the driver reports currentExtent in (the panel's own, portrait, by the guide), so it is sized
++    // from the window: the size SDL lays everything else out by.
++    info.preTransform = (capabilities.supportedTransforms & VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR)
++                            ? VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR
++                            : capabilities.currentTransform;
++    if (info.preTransform == VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR) {
++        int width = 0;
++        int height = 0;
++        SDL_GetWindowSizeInPixels(g.window, &width, &height);
++        if (width > 0 && height > 0) {
++            extent = {static_cast<uint32_t>(width), static_cast<uint32_t>(height)};
++            info.imageExtent = extent;
++        }
++    }
++    static VkExtent2D logged = {};
++    if (logged.width != extent.width || logged.height != extent.height) {
++        logged = extent;
++        std::fprintf(stderr, "gfx: surface %ux%u, transform %#x (supported %#x), image %ux%u\n",
++                     capabilities.currentExtent.width, capabilities.currentExtent.height,
++                     static_cast<unsigned>(capabilities.currentTransform),
++                     static_cast<unsigned>(capabilities.supportedTransforms), extent.width, extent.height);
++    }
++#else
+     info.preTransform = capabilities.currentTransform;
++#endif
+     info.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
+     info.presentMode = PickPresentMode();
+     info.clipped = VK_TRUE;
+@@ -501,6 +564,11 @@ bool RecreateSwapchain(bool targets = true) {
+     if (g.offscreen) {
+         return ResizeOffscreen();
+     }
++#ifdef __ANDROID__
++    if ((g_surface_stale.exchange(false) || g.surface == VK_NULL_HANDLE) && !RecreateSurface()) {
++        return false;
++    }
++#endif
+     vkDeviceWaitIdle(g.device);
+     DestroySwapchainResources();
+     if (!CreateSwapchain()) {
+@@ -790,6 +858,9 @@ void RendererInit(SDL_Window *window, const RendererConfig &config) {
+     if (!g.offscreen && !SDL_Vulkan_CreateSurface(window, g.instance, nullptr, &g.surface)) {
+         Fatal("SDL_Vulkan_CreateSurface: %s", SDL_GetError());
+     }
++#ifdef __ANDROID__
++    SDL_AddEventWatch(WatchForeground, nullptr);
++#endif
+     PickPhysicalDevice();
+     CreateDevice();
+     CreateFrames();
+@@ -813,6 +884,9 @@ void RendererInit(SDL_Window *window, const RendererConfig &config) {
+ }
+ 
+ void RendererShutdown() {
++#ifdef __ANDROID__
++    SDL_RemoveEventWatch(WatchForeground, nullptr);
++#endif
+     if (g.device == VK_NULL_HANDLE) {
+         return;
+     }
+@@ -911,6 +985,12 @@ bool AcquireImage(bool targets) {
+     }
+     VkResult result = vkAcquireNextImageKHR(g.device, g.swapchain.handle, UINT64_MAX,
+                                             CurrentFrame().image_available, VK_NULL_HANDLE, &g.image_index);
++#ifdef __ANDROID__
++    if (result == VK_ERROR_SURFACE_LOST_KHR) {
++        g_surface_stale = true;
++        result = VK_ERROR_OUT_OF_DATE_KHR;
++    }
++#endif
+     if (result == VK_ERROR_OUT_OF_DATE_KHR) {
+         // Recreating may submit pending uploads and move to the next slot.
+         if (!RecreateSwapchain(targets)) {
+@@ -920,6 +1000,25 @@ bool AcquireImage(bool targets) {
+         result = vkAcquireNextImageKHR(g.device, g.swapchain.handle, UINT64_MAX,
+                                        CurrentFrame().image_available, VK_NULL_HANDLE, &g.image_index);
+     }
++#ifdef __ANDROID__
++    // Android calls every image suboptimal while preTransform differs from currentTransform, which is
++    // always so here (CreateSwapchain). A real change of size, such as the turn to landscape after the
++    // window was made while the activity was still upright, shows as the window's size: the image
++    // follows it whether or not a resize event says so.
++    if (result == VK_SUBOPTIMAL_KHR) {
++        result = VK_SUCCESS;
++    }
++    {
++        int width = 0;
++        int height = 0;
++        SDL_GetWindowSizeInPixels(g.window, &width, &height);
++        if (width > 0 && height > 0 &&
++            (static_cast<uint32_t>(width) != g.swapchain.extent.width ||
++             static_cast<uint32_t>(height) != g.swapchain.extent.height)) {
++            g.resize_pending = true;
++        }
++    }
++#endif
+     if (result == VK_SUBOPTIMAL_KHR) {
+         g.resize_pending = true;
+     } else if (result != VK_SUCCESS) {
+@@ -965,6 +1064,17 @@ void PresentImage(Frame &frame, VkCommandBuffer cmd, Image &source) {
+     present.pSwapchains = &g.swapchain.handle;
+     present.pImageIndices = &g.image_index;
+     VkResult result = vkQueuePresentKHR(g.queue, &present);
++#ifdef __ANDROID__
++    if (result == VK_ERROR_SURFACE_LOST_KHR) {
++        g_surface_stale = true;
++        result = VK_ERROR_OUT_OF_DATE_KHR;
++    }
++#endif
++#ifdef __ANDROID__
++    if (result == VK_SUBOPTIMAL_KHR) {
++        result = VK_SUCCESS;
++    }
++#endif
+     if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR) {
+         g.resize_pending = true;
+     } else {

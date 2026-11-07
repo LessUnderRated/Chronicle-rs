@@ -11,6 +11,7 @@
 
 #include <SDL3/SDL.h>
 
+#include "gfx/gfx.hpp"
 #include "localize.hpp"
 #include "menu_option.hpp"
 #include "platform/input.hpp"
@@ -277,6 +278,14 @@ int Aspect(const Config &config) {
 
 void SetAspect(Config &config, int choice) {
     config.aspect = choice == 1 ? ConfigAspect::FourThree : ConfigAspect::Auto;
+}
+
+[[maybe_unused]] int Cover(const Config &config) {
+    return config.cover == ConfigCover::Fit ? 1 : 0;
+}
+
+[[maybe_unused]] void SetCover(Config &config, int choice) {
+    config.cover = choice == 1 ? ConfigCover::Fit : ConfigCover::Stretch;
 }
 
 // 50% to 200% in tenths.
@@ -609,6 +618,11 @@ const Row kDisplayRows[] = {
     SettingRow("video.aspect", "Aspect Ratio",
                "\"Aspect Ratio\"\nWide: the world fills\nthe window. 4:3: the\nPS2's picture.", Two, Aspect, SetAspect,
                nullptr, "Wide|4:3"),
+#ifdef KZ_GFX_COVER_MODE
+    SettingRow("video.cover", "Full-Screen Pictures",
+               "\"Full-Screen Pictures\"\nWide: cutscene stills\nstretch to the window.\n4:3: kept, with bars.", Two,
+               Cover, SetCover, nullptr, "Wide|4:3"),
+#endif
     SettingRow("video.ui_scale", "Interface Size",
                "\"Interface Size\"\nThe size of the HUD\nand menus, from when\nOptions closes.", UiScaleCount,
                UiScaleChoice, SetUiScale, UiScaleText),

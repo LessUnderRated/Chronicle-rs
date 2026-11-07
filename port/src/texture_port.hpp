@@ -6,6 +6,7 @@
 
 #include <array>
 #include <cstdint>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -73,6 +74,12 @@ constexpr unsigned PortClutCsm1(unsigned position) {
 // the TBP0 key, 0 when the renderer is not up or refused it; *palette_key gets the CBP key or 0.
 unsigned PortCreateTexture(const PortDecodedTexture &decoded, PortTextureOwner owner, unsigned *palette_key);
 
+// Same, but occupies `key` / `palette_at` when those slots can be claimed, so a restored TEX0
+// that still names them keeps resolving. Allocates a fresh slot when the requested one is
+// reserved or owned by someone else.
+unsigned PortCreateTextureAt(unsigned key, const PortDecodedTexture &decoded, PortTextureOwner owner,
+                             unsigned palette_at, unsigned *palette_key);
+
 // A texture the game draws into or uploads into without pixels of its own: a named render
 // target (kept alive across releases, so its contents survive a mode's re-entry) for 16, 24 and
 // 32 bits, an index texture with a zeroed palette for 4 and 8 bits.
@@ -82,10 +89,35 @@ unsigned PortCreatePlaceholder(std::string_view name, unsigned width, unsigned h
 // Registers a key for a named render target that already has a fixed role (the manager's "work").
 unsigned PortRegisterNamedTarget(std::string_view name, unsigned width, unsigned height, bool has_alpha,
                                  PortTextureOwner owner);
+unsigned PortRegisterNamedTargetAt(unsigned key, std::string_view name, unsigned width, unsigned height, bool has_alpha,
+                                   PortTextureOwner owner);
 
 void PortReleaseKey(unsigned key);
 void PortReleaseOwner(PortTextureOwner owner);
 bool PortKeyLive(unsigned key);
+bool PortPaletteLive(unsigned key);
+bool PortKeyIsNamedTarget(unsigned key);
+// True when `tbp` is a live image of this size, and a named target's name matches `name`.
+bool PortImageMatches(unsigned tbp, unsigned width, unsigned height, std::string_view name);
+
+// GPU pixels of a manager texture at save, so a boot load can restore sheets whose CTexture::image
+// still names a reused file buffer (cursor, HUD, stayframe) rather than the pixels that were drawn.
+struct PortTextureSnapshot {
+    std::string               name;
+    unsigned                  width = 0;
+    unsigned                  height = 0;
+    int                       bpp = 0;
+    std::vector<uint8_t>      pixels;
+    std::array<uint32_t, 256> palette = {};
+    bool                      indexed = false;
+};
+
+void TextureCollectSnapshots(std::vector<PortTextureSnapshot> *out);
+
+// After a state restore: keep the GPU registry when the restored TBP0s are still live (a
+// same-session load), otherwise occupy those same keys from snapshots, then image pointers, then a
+// placeholder, so every restored TEX0 copy still resolves.
+void TextureRebuild(const std::vector<PortTextureSnapshot> &snapshots = {});
 
 // The GS local-to-local transfer MGMoveImage describes, in texels of the two images: TBP0/PSM of
 // each side. Images copy on the renderer; palettes copy their CPU shadow in CLUT image positions

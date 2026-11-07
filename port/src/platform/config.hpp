@@ -12,6 +12,13 @@ enum class ConfigAspect {
     FourThree,
 };
 
+// video.cover: a 4:3 picture that covers the whole frame (a cutscene still) in a wider window,
+// stretched to its edges or kept 4:3 with black at the sides (gfx::CoverMode).
+enum class ConfigCover {
+    Stretch,
+    Fit,
+};
+
 // The game's own Options screen settings, which retail keeps in each save: here they hold for every
 // save, and the save's copy follows them. config.json keeps each in the section of the screen's page
 // that shows it: audio.sound, input.vibration, video.soft_focus, the rest under game.
@@ -34,13 +41,31 @@ struct ConfigGameOptions {
 };
 
 struct Config : HostSettings {
+#ifdef __ANDROID__
+    // SDL makes an Android window immersive, and lays it under a display cutout, only fullscreen.
+    Config() { fullscreen = true; }
+#endif
+
     bool              debug_mode = false;
     bool              qte_always_win = false;
     bool              element_quick_select = false;
     bool              swap_keeps_lock_on = false;
     bool              text_wipe = false; /**< Enables the developer text comparison and tuning tool. */
     bool              interpolation = true;
+    // video.water_flat: draws the water as a flat tinted sheet, without its refraction of the
+    // frame (the PS2's feedback trick). A diagnostic for the soft glow reported over the sea in
+    // Queens; off is retail.
+    bool              water_flat = false;
     ConfigAspect      aspect = ConfigAspect::Auto;
+#ifdef __ANDROID__
+    // A phone is about twice as wide as it is tall, where a stretched 4:3 picture shows.
+    ConfigCover cover = ConfigCover::Fit;
+#else
+    ConfigCover cover = ConfigCover::Stretch;
+#endif
+    // video.title_aspect: the title screen, the attract movie and the opening in the 4:3 frame
+    // ("4:3") or filling the window as the rest of the game does ("wide").
+    bool title_letterbox = false;
     float             ui_scale = 1.0f;
     float             detail_distance = 0.0f;
     float             shadow_distance = 0.0f;
@@ -119,6 +144,11 @@ void ConfigDisplayChanged(const Config &before, const Config &after);
 // settings are saved. A call from a change hook is refused and returns false. Main thread only, as are
 // the hooks.
 bool ConfigChange(const Config &config);
+
+// One setting by its config.json name and its value as JSON text ("video.aspect", "\"4:3\""), through
+// ConfigChange: what a settings screen outside the game's own (Android's) sends. False when the name
+// is unknown, the value does not parse or suit it, or the change is not saved.
+bool ConfigSetValue(std::string_view name, std::string_view json);
 
 // Whether a change to the setting, by its config.json name ("game.debug_mode"), reaches the running
 // game only at the next start.

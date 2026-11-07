@@ -1,3 +1,6 @@
+#include <SDL3/SDL.h>
+
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -19,6 +22,7 @@
 #include "identity.hpp"
 #include "langset.hpp"
 #include "localize.hpp"
+#include "main.hpp"
 #include "menu_option.hpp"
 #include "menu_save.hpp"
 #include "mglib.hpp"
@@ -36,6 +40,8 @@
 #include "platform/window.hpp"
 #include "screen.hpp"
 #include "snd.hpp"
+#include "state_save.hpp"
+#include "texture_port.hpp"
 #include "title/opening.hpp"
 #include "title/rushmovi.hpp"
 #include "title/title.hpp"
@@ -45,6 +51,9 @@ int  EditLoop();
 void SndInit();
 
 namespace fs = std::filesystem;
+
+// The game's current mode (main.hpp's GameMode), defined by ps2/src/main.cpp.
+extern s32 mode;
 
 namespace {
 
@@ -64,6 +73,10 @@ struct Options {
     bool         screenshot_fps = false;
     const char  *export_text = nullptr;
     const char  *font = nullptr;
+    // The state round-trip hooks: save the whole game to a file, and load one, between ticks.
+    const char  *state_save = nullptr;
+    const char  *state_load = nullptr;
+    int          state_frame = 120;
 };
 
 Options g_options;
@@ -95,6 +108,11 @@ Options g_options;
                  "test hooks:\n"
                  "  --jump MODE[:MAP]  start in edit:<map>, dungeon:<0-6>, title, rush, opening or menu,\n"
                  "                     skipping the warm-up (DC_JUMP); see docs/PC.md\n"
+                 "  --state-save FILE  write a save state at --state-frame's frame (test hook; the file\n"
+                 "                     holds only this session)\n"
+                 "  --state-load FILE  load a save state at --state-frame's frame, or 180 frames after a\n"
+                 "                     --state-save in the same run\n"
+                 "  --state-frame N    the frame the state hooks run at (default 120)\n"
                  "  --fast-load        loading-screen holds and fades of a few ticks (DC_FAST_LOAD=1)\n"
                  "  --give ITEM,...    give the party these item and weapon numbers when a town or dungeon\n"
                  "                     starts, unless it holds them (DC_GIVE); see docs/PC.md\n",
@@ -145,6 +163,12 @@ Options ParseOptions(int argc, const char **argv) {
             options.export_text = value();
         } else if (arg == "--font") {
             options.font = value();
+        } else if (arg == "--state-save") {
+            options.state_save = value();
+        } else if (arg == "--state-load") {
+            options.state_load = value();
+        } else if (arg == "--state-frame") {
+            options.state_frame = static_cast<int>(number());
         } else if (arg == "--show-fps") {
             options.show_fps = true;
         } else if (arg == "--screenshot-fps") {
@@ -188,11 +212,22 @@ void RequireData() {
     }
 }
 
+// The modes video.title_aspect keeps in the 4:3 frame: the title and what plays before it.
+bool TitleMode() {
+    return mode == GAME_MODE_TITLE || mode == GAME_MODE_RUSH_MOVIE || mode == GAME_MODE_OPENING ||
+           mode == GAME_MODE_LANGUAGE;
+}
+
 // The Options screen keeps the interface at 100%, so a size that takes the HUD past the window
 // cannot take the screen's own controls with it.
 gfx::FrameLayout Layout(const Config &config) {
-    return {config.aspect == ConfigAspect::Auto ? gfx::AspectMode::Fill : gfx::AspectMode::Letterbox,
-            MenuOptionOpen() ? 1.0f : config.ui_scale};
+    bool             wide = config.aspect == ConfigAspect::Auto && !(config.title_letterbox && TitleMode());
+    gfx::FrameLayout layout = {wide ? gfx::AspectMode::Fill : gfx::AspectMode::Letterbox,
+                               MenuOptionOpen() ? 1.0f : config.ui_scale};
+#ifdef KZ_GFX_COVER_MODE
+    layout.cover = config.cover == ConfigCover::Fit ? gfx::CoverMode::Fit : gfx::CoverMode::Stretch;
+#endif
+    return layout;
 }
 
 // DC_BGM_TEST=<set>:<track>: a test aid. From frame 150 of the run (the title has started) the music
@@ -218,18 +253,91 @@ void BgmTestPump() {
     SndBgmPlay(track);
 }
 
+void RenderAudio(void *, float *out, int frames);
+
+#ifdef __ANDROID__
+// android/src: the touch gamepad coming and going, settings from the app's own menu, a pause while
+// that menu is open, and the speed toggle.
+extern "C" void     chronicle_android_pump();
+extern "C" bool     chronicle_android_paused();
+extern "C" unsigned chronicle_android_speed();
+extern "C" bool     chronicle_android_take_setting(char *name, std::size_t name_size, char *value, std::size_t value_size);
+
+void ApplyAndroidSettings() {
+    char name[64];
+    char value[256];
+    while (chronicle_android_take_setting(name, sizeof name, value, sizeof value)) {
+        if (std::strcmp(name, "state.request") == 0) {
+            // The app menu's quick save and load: "save:<slot>" or "load:<slot>" as a JSON string.
+            std::string_view request(value);
+            if (request.size() >= 2 && request.front() == '"' && request.back() == '"') {
+                request = request.substr(1, request.size() - 2);
+            }
+            bool        save = request.starts_with("save:");
+            int         slot = 0;
+            std::string rest(request.substr(save ? 5 : 5));
+            bool        known = save || request.starts_with("load:");
+            if (known) {
+                known = !rest.empty() &&
+                        rest.find_first_not_of("0123456789") == std::string_view::npos &&
+                        (slot = std::atoi(rest.data())) >= 0 && slot < 10;
+            }
+            if (known) {
+                GameStateRequest(save, slot);
+            } else {
+                std::fprintf(stderr, "android: bad state request %s\n", value);
+            }
+            continue;
+        }
+        if (!ConfigSetValue(name, value)) {
+            std::fprintf(stderr, "android: %s = %s was not applied\n", name, value);
+        }
+    }
+}
+
+void PumpAndroid() {
+    chronicle_android_pump();
+    ApplyAndroidSettings();
+    if (chronicle_android_paused()) {
+        // The game holds still under the menu: no ticks, no sound. The clock re-anchors after, so
+        // the time paused is not caught up.
+        AudioOutputStop();
+        while (chronicle_android_paused()) {
+            SDL_Delay(20);
+            ApplyAndroidSettings();
+        }
+        AudioOutputStart(audio::DefaultMixer().Rate(), RenderAudio, nullptr);
+        ClockSetTickRate(ClockTickRate());
+    }
+    double rate = ConfigGet().tick_rate * chronicle_android_speed();
+    if (ClockTickRate() != rate) {
+        ClockSetTickRate(rate);
+    }
+}
+#endif
+
+void StateHookPump();
+
 void PumpHost() {
+#ifdef __ANDROID__
+    PumpAndroid();
+#endif
     BgmTestPump();
+    StateHookPump();
     if (!WindowPollEvents()) {
         GameRequestStop();
     }
     DisplayPump();
-    // A change of video.aspect or video.ui_scale, or the Options screen opening or closing, waits
+    // A change of video.aspect, video.cover or video.ui_scale, or the Options screen opening or closing, waits
     // for a pump outside a frame.
     if (!gfx::InFrame()) {
         gfx::FrameLayout layout = Layout(ConfigGet());
         gfx::FrameLayout current = gfx::CurrentFrameLayout();
-        if (layout.aspect != current.aspect || layout.ui_scale != current.ui_scale) {
+        bool changed = layout.aspect != current.aspect || layout.ui_scale != current.ui_scale;
+#ifdef KZ_GFX_COVER_MODE
+        changed |= layout.cover != current.cover;
+#endif
+        if (changed) {
             gfx::SetFrameLayout(layout);
         }
     }
@@ -265,6 +373,68 @@ void LoadInputScript(const char *path) {
 
 void RenderAudio(void *, float *out, int frames) {
     audio::DefaultMixer().Render(out, frames);
+}
+
+bool StateApplyPending() {
+    bool loaded = false;
+    bool save = false;
+    int  slot = 0;
+    while (GameStateTakeRequest(&save, &slot)) {
+        AudioOutputStop();
+        bool ok = GameStateRunRequest(PathsSaveRoot(), save, slot);
+        AudioOutputStart(audio::DefaultMixer().Rate(), RenderAudio, nullptr);
+        if (!save) {
+            ClockSetTickRate(ClockTickRate());
+        }
+        if (!ok) {
+            break;
+        }
+        if (!save) {
+            loaded = true;
+            if (!gfx::InFrame()) {
+                gfx::SetFrameLayout(Layout(ConfigGet()));
+            }
+        }
+    }
+    return loaded;
+}
+
+// The state round-trip: save at --state-frame's frame, and load at the frame 180 ticks later (or at
+// the same frame without a save). The audio output is stopped around both, since its callback
+// reads the game's memory on another thread, and the clock re-anchors after a load, as it does
+// after a pause. Menu save/load is not applied here: this pump also runs inside DataLoad.
+void StateHookPump() {
+    if (g_options.state_save == nullptr && g_options.state_load == nullptr) {
+        return;
+    }
+    static int load_frame = -1;
+    if (load_frame < 0) {
+        load_frame = g_options.state_save != nullptr ? g_options.state_frame + 180 : g_options.state_frame;
+    }
+    static bool saved = false;
+    static bool loaded = false;
+    std::string error;
+    if (!saved && g_options.state_save != nullptr && GameFrameCount() >= g_options.state_frame) {
+        saved = true;
+        AudioOutputStop();
+        bool ok = GameStateSave(PathsFromUtf8(g_options.state_save), &error);
+        AudioOutputStart(audio::DefaultMixer().Rate(), RenderAudio, nullptr);
+        std::fprintf(stderr, "state save: %s\n", ok ? "ok" : error.c_str());
+        if (!ok) {
+            std::exit(kExitFailure);
+        }
+    }
+    if (!loaded && g_options.state_load != nullptr && GameFrameCount() >= load_frame) {
+        loaded = true;
+        AudioOutputStop();
+        bool ok = GameStateLoad(PathsFromUtf8(g_options.state_load), &error);
+        AudioOutputStart(audio::DefaultMixer().Rate(), RenderAudio, nullptr);
+        std::fprintf(stderr, "state load: %s\n", ok ? "ok" : error.c_str());
+        if (!ok) {
+            std::exit(kExitFailure);
+        }
+        ClockSetTickRate(ClockTickRate());
+    }
 }
 
 void ReportShaderProgress(uint32_t done, uint32_t total) {
@@ -472,9 +642,20 @@ int Run(int argc, const char **argv) {
 
 } // namespace
 
+bool GameStateApplyPending() {
+    return StateApplyPending();
+}
+
 PORT_OVERRIDE int main(int argc, const char **argv, const char **envp) {
     return Run(argc, argv);
 }
+
+#ifdef __ANDROID__
+// The Rust crate in android/ defines SDL_main, which SDLActivity calls, and enters the game here.
+extern "C" int dc_main(int argc, const char **argv) {
+    return Run(argc, argv);
+}
+#endif
 
 extern "C" {
 void init_all__Fv() {

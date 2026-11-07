@@ -135,6 +135,21 @@ bool ReadAspect(const Json &value, ConfigAspect &out) {
     return true;
 }
 
+bool ReadCover(const Json &value, ConfigCover &out) {
+    if (!value.is_string()) {
+        return false;
+    }
+    std::string cover = Lower(value.get<std::string>());
+    if (cover == "stretch") {
+        out = ConfigCover::Stretch;
+    } else if (cover == "fit") {
+        out = ConfigCover::Fit;
+    } else {
+        return false;
+    }
+    return true;
+}
+
 constexpr const char *kGlyphDeviceNames[] = {"auto", "ps3", "ps4", "ps5", "ps5color", "xbox", "switch", "steamdeck", "steamcontroller", "keyboard"};
 
 bool ReadGlyphDevice(const Json &value, ConfigGlyphDevice &out) {
@@ -449,6 +464,9 @@ bool Apply(Config &config, std::string_view name, const Json &value) {
     if (name == "video.interpolation") {
         return ReadBool(value, config.interpolation);
     }
+    if (name == "video.water_flat") {
+        return ReadBool(value, config.water_flat);
+    }
     if (name == "video.max_fps") {
         double fps = 0.0;
         if (!ReadNumber(value, fps) || !(fps >= 0.0) || !std::isfinite(fps)) {
@@ -478,6 +496,20 @@ bool Apply(Config &config, std::string_view name, const Json &value) {
     }
     if (name == "video.aspect") {
         return ReadAspect(value, config.aspect);
+    }
+    if (name == "video.cover") {
+        return ReadCover(value, config.cover);
+    }
+    if (name == "video.title_aspect") {
+        if (!value.is_string()) {
+            return false;
+        }
+        std::string aspect = Lower(value.get<std::string>());
+        if (aspect != "4:3" && aspect != "wide") {
+            return false;
+        }
+        config.title_letterbox = aspect == "4:3";
+        return true;
     }
     if (name == "video.ui_scale") {
         float scale = 0.0f;
@@ -588,6 +620,18 @@ float ConfigShadowDistance() {
     return distance > 0.0f ? distance : std::numeric_limits<float>::infinity();
 }
 
+bool ConfigSetValue(std::string_view name, std::string_view json) {
+    Json value = Json::parse(json, nullptr, false);
+    if (value.is_discarded()) {
+        return false;
+    }
+    Config config = ConfigGet();
+    if (!Apply(config, name, value)) {
+        return false;
+    }
+    return ConfigChange(config);
+}
+
 Config ConfigParse(std::string_view text) {
     Config config;
     if (Trim(text).empty()) {
@@ -645,11 +689,14 @@ std::string ConfigSerialize(const Config &config) {
     root["video"]["boss_shadow"] = config.boss_shadow;
     root["video"]["present_mode"] = PresentModeName(config.present_mode);
     root["video"]["interpolation"] = config.interpolation;
+    root["video"]["water_flat"] = config.water_flat;
     root["video"]["max_fps"] = config.max_fps;
     root["video"]["width"] = config.window_width;
     root["video"]["height"] = config.window_height;
     root["video"]["fullscreen"] = config.fullscreen;
     root["video"]["aspect"] = config.aspect == ConfigAspect::FourThree ? "4:3" : "auto";
+    root["video"]["cover"] = config.cover == ConfigCover::Fit ? "fit" : "stretch";
+    root["video"]["title_aspect"] = config.title_letterbox ? "4:3" : "wide";
     root["video"]["ui_scale"] = Shortest(config.ui_scale);
     root["video"]["show_fps"] = config.show_fps;
     root["video"]["fps_detail"] = FpsDetailName(config.fps_detail);

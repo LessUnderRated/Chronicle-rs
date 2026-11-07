@@ -1,0 +1,83 @@
+<resources>
+    <string name="app_name">Chronicle</string>
+
+    <string name="setup_title">Your Dark Cloud disc</string>
+    <string name="setup_message">Chronicle plays from the files of your own copy of Dark Cloud. Make a disc image (ISO) of your PlayStation 2 disc, put it on this phone, and choose it here.\n\nThe US (NTSC-U) and European (PAL) releases are supported; the Japanese (NTSC-J) release is experimental.\n\nThe game\'s data, about 1.5 GB, is copied out of the image once. The image itself is left as it is.</string>
+    <string name="setup_choose">Choose disc image</string>
+    <string name="setup_choose_another">Choose another</string>
+    <string name="setup_quit">Quit</string>
+
+    <string name="setup_reading">Reading the disc</string>
+    <string name="setup_copying">Copying the disc into the app: %1$s of %2$s MB</string>
+    <string name="setup_unreadable">The file could not be read</string>
+    <string name="setup_cancelled">Cancelled</string>
+    <string name="setup_not_dark_cloud">That is not a Dark Cloud disc image</string>
+
+    <string name="setup_disc_title">Dark Cloud (%1$s)</string>
+    <string name="setup_serial">Product code: %1$s</string>
+    <string name="setup_release">Release: %1$s</string>
+    <string name="setup_languages">Languages: %1$s</string>
+    <string name="setup_size">Game data: %1$d files, %2$s GB</string>
+    <string name="setup_japanese_note">The Japanese release is experimental: Chronicle is built from the European game\'s code and has not been tried with Japanese data yet.</string>
+    <string name="setup_no_space">There is not enough free space: the data needs %1$s GB and %2$s GB is free.</string>
+    <string name="setup_extract_question">Extract the game data now? It takes a few minutes.</string>
+    <string name="setup_extract">Extract</string>
+
+    <string name="setup_extract_title">Extracting the game data</string>
+    <string name="setup_starting">Starting…</string>
+    <string name="setup_extracting">%1$d of %2$d files, %3$s of %4$s MB</string>
+    <string name="setup_failed">Extraction failed</string>
+    <string name="menu_resume">Resume</string>
+    <string name="menu_speed_normal">Speed: 1× (tap for 2×)</string>
+    <string name="menu_speed_fast">Speed: 2× (tap for 1×)</string>
+    <string name="menu_settings">Graphics &amp; video settings</string>
+    <string name="menu_edit_controls">Edit touch controls</string>
+    <string name="menu_hide_controls">Hide touch controls</string>
+    <string name="menu_show_controls">Show touch controls</string>
+    <string name="menu_import_card">Import saves from a PS2 memory card</string>
+    <string name="menu_share_log">Share log</string>
+    <string name="menu_quit">Quit</string>
+    <string name="menu_back">Back</string>
+
+    <string name="menu_save_state">Save state</string>
+    <string name="menu_load_state">Load state</string>
+    <string name="state_slot">Slot %1$d</string>
+    <string name="state_slot_empty">Slot %1$d (empty)</string>
+    <string name="state_offer_title">Load save state?</string>
+    <string name="state_offer_message">Load the last save state (slot %1$d)?</string>
+    <string name="state_offer_load">Load</string>
+    <string name="state_offer_skip">Not now</string>
+
+    <string name="setting_aspect">Aspect ratio</string>
+    <string name="setting_title_aspect">Title &amp; opening</string>
+    <string name="setting_cover">Full-screen pictures</string>
+    <string name="setting_ui_scale">Interface size</string>
+    <string name="setting_max_fps">Frame limit</string>
+    <string name="setting_present">V-Sync</string>
+    <string name="setting_interpolation">Smooth motion</string>
+    <string name="setting_water_flat">Flat water (debug)</string>
+    <string name="setting_anisotropy">Anisotropic filter</string>
+    <string name="setting_soft_focus">Soft focus</string>
+    <string name="setting_text_font">Text font</string>
+    <string name="setting_show_fps">FPS counter</string>
+    <string name="setting_volume">Volume</string>
+    <string name="setting_controls_opacity">Touch controls opacity</string>
+
+    <string name="edit_hint">Drag a control to move it; touch one to set its size.</string>
+    <string name="edit_selected">%1$s: drag to move</string>
+    <string name="edit_size">Size</string>
+    <string name="edit_opacity">Opacity (all)</string>
+    <string name="edit_reset">Reset all</string>
+    <string name="edit_done">Done</string>
+
+    <string name="import_slot">imported as save %1$d</string>
+    <string name="import_converted">It was made by another release of the game (%1$s): it is given this one\'s version and should load, but that is untried.</string>
+    <string name="import_where">The saves are on the game\'s load screen.</string>
+    <string name="crash_title">Chronicle closed unexpectedly</string>
+    <string name="crash_message">The last time it ran, Chronicle crashed or quit with an error. Its log says where; share it (or copy it and paste it) with whoever is fixing it.</string>
+    <string name="crash_continue">Continue</string>
+    <string name="log_share">Share log</string>
+    <string name="log_copy">Copy log</string>
+    <string name="log_copied">Log copied</string>
+    <string name="log_subject">Chronicle log</string>
+</resources>

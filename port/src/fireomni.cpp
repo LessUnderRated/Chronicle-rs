@@ -8,6 +8,7 @@
 #include "draw2d_port.hpp"
 #include "mglib.hpp"
 #include "rect.hpp"
+#include "runeffect.hpp"
 #include "snd.hpp"
 #include "texture.hpp"
 
@@ -121,4 +122,54 @@ PORT_OVERRIDE void CFireOmni::DrawFire(int unused0, int unused1, CCamera *camera
     services.set_test(nullptr);
     services.set_zbuf(nullptr);
     services.set_alpha(nullptr);
+}
+
+// Retail clips the heat raster's rectangle to the frame's 640 columns and copies it through
+// "blender", a 640-wide target. A torch wholly past the frame's sides was off screen at 4:3, but a
+// wider window shows it, and its raster would copy from outside blender; such a raster is left out
+// (the fire itself still draws). One across the frame's edge is clipped as retail clips it.
+PORT_OVERRIDE void CFireOmni::DrawRaster() {
+    sceVu0FVECTOR world;
+    int           top_left[4];
+    int           bottom_right[4];
+
+    world[0] = pos[0];
+    world[1] = pos[1] + 3.0f;
+    world[2] = pos[2];
+    world[3] = 1.0f;
+
+    if (MGRotTransPers3DSprite(top_left, bottom_right, world, 15.0f, 16.0f, 0) != 1) {
+        return;
+    }
+
+    int x = (top_left[0] - 0x6C00) >> 4;
+    int y = (top_left[1] - GS_Y_OFFSET) >> 3;
+    int width = (bottom_right[0] - top_left[0]) >> 4;
+    int height = (bottom_right[1] - top_left[1]) >> 4;
+    height >>= 1;
+
+    if (x >= 640 || x + width <= 0) {
+        return;
+    }
+
+    if (x + width > 639 && x < 640) {
+        width = 639 - x;
+    }
+
+    if (x < 0 && x + width > 0) {
+        width = x + width;
+        x = 0;
+    }
+
+    if (y < 1) {
+        height += y >> 1;
+        y = 0;
+    }
+
+    sceGsTex0 blend = *reinterpret_cast<sceGsTex0 *>(&TexManager.GetTexture(const_cast<char *>("blender"), -1)->tex0);
+    blendTextuerTest(Vif1Packet, blend.TBP0, blend.TBW, blend.PSM, CRect_i_(x, y >> 1, width, height),
+                     TexManager.GetTexture(const_cast<char *>("alpha01"), -1), CRect_i_(0, 0, width, height), CRect_i_(0, 0, 64, 64),
+                     top_left[2] >> 4, raster_phase);
+    set2DSprite(Vif1Packet, TexManager.GetTexture(const_cast<char *>("blender"), -1), CRect_i_(x, y, width, height * 2),
+                CRect_i_(1, 1, width - 2, height - 2));
 }
