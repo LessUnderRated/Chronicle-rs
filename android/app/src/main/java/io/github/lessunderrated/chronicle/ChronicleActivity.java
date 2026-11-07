@@ -8,6 +8,7 @@ import android.net.Uri;
 import android.os.Bundle;
 import android.os.ParcelFileDescriptor;
 import android.view.Gravity;
+import android.view.InputDevice;
 import android.view.KeyEvent;
 import android.view.ViewGroup;
 import android.widget.Button;
@@ -89,10 +90,13 @@ public class ChronicleActivity extends SDLActivity implements TouchOverlay.Liste
         setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
     }
 
-    /** Back opens the menu rather than leaving the game. */
+    /**
+     * Back opens the menu rather than leaving the game. A controller's Back (an Xbox pad's View button, which Android
+     * reports as KEYCODE_BACK) is the game's Select instead, and goes to SDL with the controller's other buttons.
+     */
     @Override
     public boolean dispatchKeyEvent(KeyEvent event) {
-        if (event.getKeyCode() == KeyEvent.KEYCODE_BACK) {
+        if (event.getKeyCode() == KeyEvent.KEYCODE_BACK && !fromController(event)) {
             if (event.getAction() == KeyEvent.ACTION_UP) {
                 if (editPanel.getVisibility() == android.view.View.VISIBLE) {
                     finishEditing();
@@ -103,6 +107,13 @@ public class ChronicleActivity extends SDLActivity implements TouchOverlay.Liste
             return true;
         }
         return super.dispatchKeyEvent(event);
+    }
+
+    /** A key from a gamepad or joystick rather than the phone's own buttons or a keyboard. */
+    private static boolean fromController(KeyEvent event) {
+        int source = event.getSource();
+        return (source & InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD
+            || (source & InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK;
     }
 
     private AlertDialog.Builder dialog() {
